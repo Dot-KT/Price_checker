@@ -1,0 +1,23 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:price_checker_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+  ai:
+    model:
+      chat: none
+      embedding: none
+    ollama:
+      init:
+        pull-model-strategy: never
+
+app:
+  security:
+    jwt:
+      signing-key-path: target/test-secrets/jwt-signing-key.json

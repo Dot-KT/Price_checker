@@ -1,3 +1,36 @@
 spring:
+  config:
+    import: optional:file:.env[.properties]
   application:
     name: price_checker
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/price_checker}
+    username: ${DATABASE_USERNAME:price_checker}
+    password: ${DATABASE_PASSWORD:}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
+app:
+  security:
+    jwt:
+      issuer: price-checker
+      audience: price-checker-api
+      signing-key-path: ${JWT_SIGNING_KEY_PATH:secrets/jwt-signing-key.json}
+      access-token-minutes: 15
+  sheets:
+    max-rows: 10000
+
+springdoc:
+  paths-to-match: /api/**
+  swagger-ui:
+    tags-sorter: alpha
+    operations-sorter: alpha
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never

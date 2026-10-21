@@ -1,0 +1,13 @@
+package dot.kt.priceChecker.dto.inventory;
+
+import dot.kt.priceChecker.entities.inventory.InventoryItem;
+import java.time.Instant;
+import java.util.UUID;
+
+public record InventoryItemResponse(UUID id, String sellerSku, String name, String model,
+        String description, long priceMinor, String currency, Integer quantity, Instant updatedAt) {
+    public static InventoryItemResponse from(InventoryItem item) {
+        return new InventoryItemResponse(item.getId(), item.getSellerSku(), item.getName(), item.getModel(),
+                item.getDescription(), item.getPriceMinor(), item.getCurrency(), item.getQuantity(), item.getUpdatedAt());
+    }
+}

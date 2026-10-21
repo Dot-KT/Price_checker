@@ -5,6 +5,8 @@
 
 ## 1. Product scope
 
+The implemented Google Sheets integration uses keyless ADC plus service-account impersonation to obtain short-lived, read-only Sheets tokens. Sellers share spreadsheets with the configured Sheets service account as Viewer. Console IAM bindings authorize the local developer or attached cloud runtime; downloadable service-account private keys are not used. See [keyless setup](docs/google-sheets-keyless.md).
+
 Price Checker has three user surfaces:
 
 - **Seller/admin web portal:** sellers upload a Google Sheet, maintain their own inventory, edit items, and replace their inventory with a new sheet. Admins can inspect all sellers, inventories, and cases.
@@ -39,6 +41,52 @@ flowchart LR
 
 ## 3. Application modules
 
+### Java package structure
+
+Organize Java code by layer first, then by feature inside each layer. The base package remains `dot.kt.priceChecker`:
+
+```text
+dot.kt.priceChecker
+|-- controllers
+|   |-- sellers
+|   |-- inventory
+|   `-- imports
+|-- service
+|   |-- sellers
+|   |-- inventory
+|   |-- imports
+|   `-- sheets
+|-- repo
+|   |-- sellers
+|   |-- inventory
+|   `-- imports
+|-- entities
+|   |-- sellers
+|   |-- inventory
+|   `-- imports
+|-- dto
+|   |-- sellers
+|   |-- inventory
+|   |-- imports
+|   `-- sheets
+|-- exceptions
+|   |-- common
+|   `-- sheets
+|-- config
+|   |-- security
+|   `-- sheets
+|-- enums
+|   `-- imports
+`-- utils
+    `-- sheets
+```
+
+Controllers handle HTTP requests and delegate business operations to services. Services own business rules and transactions, repositories handle persistence, and entities map database tables. DTOs carry request/response and intermediate data. Exceptions and the global exception handler live under `exceptions`; Spring configuration lives under `config`. Keep stateless URL validation helpers under `utils`.
+
+Tests mirror the corresponding production packages under `src/test/java`. Add feature packages such as `users` within the relevant layers when that feature is implemented. Keep the application entry point at the base package so Spring discovers all layers.
+
+### Module responsibilities
+
 | Module | Responsibilities |
 |---|---|
 | Identity and access | Login, password reset, session/JWT handling, roles, account status, seller ownership checks |
@@ -58,7 +106,7 @@ Keep channel-specific code inside adapters. The bot orchestrator should operate 
 
 Use UUID primary keys and UTC timestamps. Store money as integer minor units (for example, kobo) plus an ISO currency code; do not use floating-point prices.
 
-- **users**: `id`, `email/phone`, `password_hash`, `role` (`ADMIN`, `SELLER`), `status`, timestamps.
+- **app_users**: `id`, `email`, `password_hash`, `role` (`ADMIN`, `MANAGER`, `SELLER`, `USER`), `enabled`, `token_version`, optimistic-lock revision, timestamps. Seller profiles share the account UUID. Only SELLER self-registration is currently exposed.
 - **sellers**: `id`, `user_id`, `display_name`, `status`, `default_currency`, contact and channel identifiers.
 - **products**: canonical product identity when useful: `id`, `name`, normalized name, brand/category, model.
 - **inventory_items**: `id`, `seller_id`, optional `product_id`, seller SKU, name, model, description, price_minor, currency, availability/quantity, source row, timestamps, `is_active`.
@@ -111,7 +159,9 @@ Use `/api/v1` and JSON. Suggested route groups:
 - `POST /webhooks/whatsapp`, `POST /webhooks/telegram`
 - `GET /admin/sellers`, `GET /admin/cases`, `PATCH /admin/cases/:id`, `GET /admin/imports`
 
-Derive seller ID from the authenticated principal, never from an untrusted request body. Validate payloads at the edge and return stable error codes and request IDs.
+Services derive the current account ID through `CurrentUserService`; controllers accept DTOs and do not receive `Principal` or `Authentication`. Services authorize ownership before accessing target seller records. Validate payloads at the edge and return stable error codes and request IDs.
+
+The implemented security flow uses Spring Security's filter chain and OAuth2 resource-server JWT validation, with an application login endpoint issuing 15-minute RS256 tokens. Roles map to explicit service permissions. ADMIN can read/write across accounts; MANAGER has project read permissions only; SELLER and USER receive only their permitted self-service operations. Tokens contain an immutable account UUID and revocation version; enabled status and authorities are loaded from the live account. The management API exposes global reads and Admin mutations. Seller registration always assigns SELLER, and privileged roles require trusted provisioning.
 
 ## 7. Security, reliability, and operations
 
