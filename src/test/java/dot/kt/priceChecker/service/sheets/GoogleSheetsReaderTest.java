@@ -46,6 +46,7 @@ class GoogleSheetsReaderTest {
         assertThat(result.rows()).containsExactly(List.of("sku", "name", "price"), List.of("000123", "Phone", "1234.50"));
         var request = ArgumentCaptor.forClass(HttpRequest.class);
         verify(client).sendAsync(request.capture(), anyBodyHandler());
+        assertThat(request.getValue().method()).isEqualTo("GET");
         assertThat(request.getValue().uri().toString())
                 .isEqualTo("https://docs.google.com/spreadsheets/d/sheet-123/export?format=csv&gid=42");
         assertThat(request.getValue().headers().firstValue("Authorization")).isEmpty();
@@ -93,6 +94,7 @@ class GoogleSheetsReaderTest {
         verify(client, times(2)).sendAsync(requests.capture(), anyBodyHandler());
         assertThat(requests.getAllValues().get(1).uri().getHost()).isEqualTo("doc-01-sheets.googleusercontent.com");
         assertThat(requests.getAllValues()).allSatisfy(request -> {
+            assertThat(request.method()).isEqualTo("GET");
             assertThat(request.headers().firstValue("Authorization")).isEmpty();
             assertThat(request.headers().firstValue("Cookie")).isEmpty();
         });

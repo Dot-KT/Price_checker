@@ -1,6 +1,7 @@
 package dot.kt.priceChecker.entities.inventory;
 
 import dot.kt.priceChecker.entities.sellers.Seller;
+import dot.kt.priceChecker.entities.catalog.Item;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -25,6 +26,10 @@ public class InventoryItem {
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "seller_id", nullable = false, updatable = false)
     private Seller seller;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "item_id")
+    private Item item;
 
     @Column(name = "seller_sku", nullable = false, updatable = false, length = 128)
     private String sellerSku;
@@ -99,6 +104,9 @@ public class InventoryItem {
     public Seller getSeller() {
         return seller;
     }
+
+    public Item getItem() { return item; }
+    public void assignItem(Item item) { this.item = item; this.updatedAt = Instant.now(); }
 
     public String getSellerSku() {
         return sellerSku;

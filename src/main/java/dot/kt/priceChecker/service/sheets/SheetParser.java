@@ -1,6 +1,9 @@
 package dot.kt.priceChecker.service.sheets;
 
 import dot.kt.priceChecker.config.sheets.SheetsProperties;
+import dot.kt.priceChecker.dto.catalog.CatalogAttributes;
+import dot.kt.priceChecker.enums.catalog.ItemDomain;
+import dot.kt.priceChecker.enums.catalog.GadgetType;
 import dot.kt.priceChecker.dto.sheets.ParsedInventoryItem;
 import dot.kt.priceChecker.dto.sheets.SheetParseResult;
 import dot.kt.priceChecker.dto.sheets.SheetRowError;
@@ -25,7 +28,8 @@ import java.util.regex.Pattern;
 @Component
 public class SheetParser {
     private static final Pattern MONEY = Pattern.compile("(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\\.[0-9]+)?");
-    private static final Set<String> SUPPORTED_HEADERS = Set.of("sku", "name", "model", "description", "condition", "price", "currency", "quantity");
+    private static final Set<String> SUPPORTED_HEADERS = Set.of("sku", "name", "model", "description", "condition", "price", "currency", "quantity",
+            "category", "brand", "series", "appliance_type", "size", "features", "gadget_type");
     private final SheetsProperties properties;
 
     public SheetParser(SheetsProperties properties) {
@@ -82,8 +86,9 @@ public class SheetParser {
             Currency currency = currency(currencyCode, sourceRow, errors);
             Long price = price(text(row, columns, "price"), currency, sourceRow, errors);
             Integer quantity = quantity(text(row, columns, "quantity"), sourceRow, errors);
+            CatalogAttributes catalog = catalog(row, columns, sourceRow, errors);
             if (errors.size() == before) {
-                items.add(new ParsedInventoryItem(sku, name, model, description, condition, price, currencyCode, quantity, sourceRow));
+                items.add(new ParsedInventoryItem(sku, name, model, description, condition, price, currencyCode, quantity, sourceRow, catalog));
             }
         }
         return new SheetParseResult(items, errors, totalRows);
@@ -97,7 +102,12 @@ public class SheetParser {
         }
         for (int index = 0; index < header.size(); index++) {
             String name = value(header.get(index)).replace("\uFEFF", "").trim().toLowerCase(Locale.ROOT).replaceAll("[\\s-]+", "_");
-            name = switch (name) { case "seller_sku", "no.", "no" -> "sku"; default -> name; };
+            name = switch (name) {
+                case "seller_sku", "no.", "no" -> "sku";
+                case "company" -> "brand";
+                case "type" -> "appliance_type";
+                default -> name;
+            };
             if (name.isEmpty()) continue;
             if (!seen.add(name)) errors.add(error(1, name, "Duplicate column header: " + name + "."));
             if (SUPPORTED_HEADERS.contains(name)) columns.put(name, index);
@@ -118,6 +128,32 @@ public class SheetParser {
             errors.add(error(row, "currency", "Use a valid ISO 4217 currency code, such as NGN or USD."));
             return null;
         }
+    }
+
+    private static CatalogAttributes catalog(List<Object> row, Map<String, Integer> columns,
+            int sourceRow, List<SheetRowError> errors) {
+        String category = text(row, columns, "category");
+        // Older sheets remain valid; classification starts only when the seller chooses a category.
+        if (category.isBlank()) return null;
+        ItemDomain domain;
+        try { domain = ItemDomain.fromSheet(category); }
+        catch (IllegalArgumentException exception) {
+            errors.add(error(sourceRow, "category", exception.getMessage()));
+            return null;
+        }
+        GadgetType gadgetType = null;
+        String type = text(row, columns, "gadget_type");
+        if (!type.isBlank()) {
+            try { gadgetType = GadgetType.fromSheet(type); }
+            catch (IllegalArgumentException exception) { errors.add(error(sourceRow, "gadget_type", exception.getMessage())); }
+        } else if (category.equalsIgnoreCase("PHONE") || category.equalsIgnoreCase("PHONES")) {
+            gadgetType = GadgetType.PHONE;
+        }
+        CatalogAttributes attributes = new CatalogAttributes(domain, text(row, columns, "brand"),
+                text(row, columns, "series"), text(row, columns, "appliance_type"),
+                text(row, columns, "size"), text(row, columns, "features"), gadgetType);
+        attributes.errors().forEach(issue -> errors.add(error(sourceRow, issue.field(), issue.message())));
+        return attributes;
     }
 
     private static Long price(String raw, Currency currency, int row, List<SheetRowError> errors) {

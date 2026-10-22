@@ -13,12 +13,16 @@ import dot.kt.priceChecker.service.security.AccountService;
 import dot.kt.priceChecker.service.sellers.SellerService;
 import dot.kt.priceChecker.service.sheets.SheetReader;
 import dot.kt.priceChecker.support.TestTokens;
+import jakarta.servlet.DispatcherType;
+import jakarta.servlet.RequestDispatcher;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -108,6 +112,33 @@ class SecurityIntegrationTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"/api/v1/auth/sellers/register", "/api/v1/auth/register"})
+    void bothRegistrationRoutesAcceptAnonymousRequestsButRejectSuppliedInvalidTokens(String path) throws Exception {
+        String registration = json.writeValueAsString(Map.of("email", "seller@example.com",
+                "password", PASSWORD, "displayName", "Shop"));
+        mvc.perform(post(path).with(TestTokens.token("invalid-token"))
+                        .contentType(MediaType.APPLICATION_JSON).content(registration))
+                .andExpect(status().isUnauthorized());
+        assertThat(users.count()).isZero();
+        mvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(registration))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.email").value("seller@example.com"));
+    }
+
+    @Test
+    void internalErrorDispatchPreservesOriginalStatusWithoutOpeningTheErrorUrl() throws Exception {
+        mvc.perform(post("/error").with(request -> {
+                            request.setDispatcherType(DispatcherType.ERROR);
+                            return request;
+                        })
+                        .requestAttr(RequestDispatcher.ERROR_STATUS_CODE, 415)
+                        .requestAttr(RequestDispatcher.ERROR_REQUEST_URI, "/api/v1/auth/sellers/register"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.status").value(415));
+        mvc.perform(get("/error")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/account/me")).andExpect(status().isUnauthorized());
+    }
+
     @Test
     void managerCanReadEveryCurrentResourceButCannotWrite() throws Exception {
         UUID sellerId = registerSeller("seller@example.com");
@@ -145,10 +176,10 @@ class SecurityIntegrationTest {
         String target = "/api/v1/management/sellers/" + sellerId;
         mvc.perform(put(target).with(admin).contentType(MediaType.APPLICATION_JSON).content(profile()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.displayName").value("Updated shop"));
-        mvc.perform(put(target + "/sheet").with(admin).contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(Map.of("url", URL)))).andExpect(status().isOk());
         when(reader.read(URL)).thenReturn(new SheetSnapshot(URL, "Inventory",
                 List.of(List.<Object>of("sku", "name", "price"), List.<Object>of("PHONE-1", "Phone", "100"))));
+        mvc.perform(put(target + "/sheet").with(admin).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("url", URL)))).andExpect(status().isOk());
         mvc.perform(get(target + "/sheet").with(bearer("manager@example.com")))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.rows[1][1]").value("Phone"));
         var preview = mvc.perform(post(target + "/inventory/imports/saved").with(admin))
@@ -180,6 +211,11 @@ class SecurityIntegrationTest {
             mvc.perform(get("/api/v1/management/sellers/" + sellerId).with(token)).andExpect(status().isForbidden());
         }
         mvc.perform(get("/api/v1/seller/me").with(bearer("user@example.com"))).andExpect(status().isForbidden());
+        mvc.perform(delete("/api/v1/seller/inventory/" + UUID.randomUUID()).with(bearer("user@example.com")))
+                .andExpect(status().isForbidden());
+        seed("manager@example.com", Role.MANAGER);
+        mvc.perform(delete("/api/v1/seller/inventory/" + UUID.randomUUID()).with(bearer("manager@example.com")))
+                .andExpect(status().isForbidden());
     }
 
     @Test

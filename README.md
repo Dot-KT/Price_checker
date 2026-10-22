@@ -1,6 +1,6 @@
 # Price Checker
 
-Spring Boot backend for seller inventory. Start with seller account CRUD and saving a Google Sheets link. An inventory import preview and confirmation flow is also available as a separate step.
+Spring Boot backend for seller inventory. Saving a public Google Sheets link reads and validates the sheet, then imports its products into PostgreSQL. Sellers can delete database items independently of the source sheet. A separate import preview and confirmation flow is also available.
 
 The project's architecture and build direction are defined in [price-checker-architecture.md](price-checker-architecture.md). This README documents setup and the implemented API.
 
@@ -44,27 +44,17 @@ After starting the app, open **http://localhost:8080/swagger-ui/index.html** (or
 3. Click **Authorize** and paste the token (without adding the `Bearer` prefix).
 4. Use **Try it out** on protected endpoints. Requests act on real accounts and inventory; delete and import confirmation operations apply their documented changes.
 
-The docs page and OpenAPI documents are public; seller endpoints still require authentication. The JSON specification is at `/v3/api-docs`, and YAML is at `/v3/api-docs.yaml`. Google Sheets import endpoints require the service-account setup below.
+The docs page and OpenAPI documents are public; seller endpoints still require authentication. The JSON specification is at `/v3/api-docs`, and YAML is at `/v3/api-docs.yaml`. Google Sheets must have the Viewer sharing settings below.
 
 ## Configure Google Sheets access
 
-Google Sheets uses **keyless authentication**. Google manages the service-account private keys; the app requests short-lived, read-only Sheets access tokens through IAM service-account impersonation. The organization policy disabling service-account key creation can stay enabled.
+The current integration downloads publicly readable CSV exports using HTTP GET only. It never writes to Google Sheets and does not require Google credentials or Editor access.
 
-1. Enable the **Google Sheets API** and **IAM Service Account Credentials API** in the relevant Google Cloud project.
-2. Create or reuse a dedicated Sheets service account. Its email is the app's Sheets identity.
-3. Grant the calling identity **Service Account Token Creator** on that Sheets service account. For local development, the caller is your signed-in Google account. On Cloud Run, the caller is the attached runtime service account. Scope this grant to the target service account.
-4. Set `GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL` in `.env` locally or as a runtime environment variable on Google Cloud. This email is public configuration, not a secret.
-5. Each seller shares their spreadsheet with the Sheets service account email as **Viewer**, then submits the normal Sheets link. Spreadsheets can remain private.
+1. In Google Sheets, select **Share > General access > Anyone with the link > Viewer**.
+2. Allow viewers to download the sheet.
+3. Submit the normal spreadsheet link, including `gid` when selecting a particular tab.
 
-```dotenv
-GOOGLE_SHEETS_SERVICE_ACCOUNT_EMAIL=price-checker-sheets@YOUR_PROJECT_ID.iam.gserviceaccount.com
-```
-
-For local development, run `gcloud auth application-default login` once with the Google account granted the permission above, then restart the app. The Cloud CLI manages its developer sign-in cache outside this project; no service-account private key is downloaded. Google Cloud deployments use their attached runtime identity through Application Default Credentials (ADC). Clear an old `GOOGLE_APPLICATION_CREDENTIALS` private-key override if one is set in your terminal; the app rejects downloaded service-account key credentials.
-
-See [the complete keyless setup guide](docs/google-sheets-keyless.md) for Console navigation, local commands, Cloud Run variables, IAM permissions, and troubleshooting. This implementation follows [Google's Java ADC and impersonation guidance](https://docs.cloud.google.com/java/getting-started/getting-started-with-google-auth-library).
-
-The app can start without Sheets access configured; import requests return `503 SHEET_CONFIGURATION` until ADC and IAM permissions are ready. Google credentials are never accepted from sellers or returned in API responses. Tokens are refreshed automatically and are never saved in `.env`.
+Private or download-blocked sheets return `422 SHEET_NOT_PUBLIC`. Deleting items in the app affects PostgreSQL only; the original spreadsheet remains unchanged.
 
 ## Prepare the spreadsheet
 
@@ -80,18 +70,29 @@ Import [the CSV template](examples/inventory-template.csv) into Google Sheets, o
 | `condition` | No | Free text, up to 255 characters, e.g. `Brand new`, `Used`, `Mint`, `Refurbished`, or `Has issues: cracked screen` |
 | `currency` | No | ISO code; defaults to the seller's currency (`NGN` at registration) |
 | `quantity` | No | Nonnegative whole number; blank means unknown |
+| `category` | For catalog browsing | `GADGET` or `ELECTRICAL_APPLIANCE`; legacy `PHONE` remains accepted; blank keeps the row unclassified |
+| `brand` | When category is set | Manufacturer/company, e.g. `Samsung`, `Apple`, `Hisense`, or `LG` |
+| `gadget_type` | For gadgets | `PHONE`, `HEADSET`, `LAPTOP`, `PC`, `TABLET`, `SMARTWATCH`, or `OTHER` |
+| `series` | For phones | Family such as `S`, `A`, or `iPhone 13` |
+| `appliance_type` | For appliances | Type such as `Television`, `Refrigerator`, or `Washing machine` |
+| `size` | No; appliances only | Consistent size/capacity text, such as `43 inch`, `8 kg`, or `200 L` |
+| `features` | No; appliances only | Features up to 1,000 characters, separated by semicolons, e.g. `4K;Smart TV;Inverter` |
 
-Headers ignore case and surrounding whitespace. `seller_sku`, `no.`, and `no` are accepted aliases for `sku`. When omitted or blank, a stable key is derived from the normalized name and model. Changing either field then creates a new identity, so explicit SKUs are preferable. Reordering rows does not change derived identities. Duplicate keys fail validation.
+Headers ignore case and surrounding whitespace. `seller_sku`, `no.`, and `no` are accepted aliases for `sku`; `company` aliases `brand`, and `type` aliases `appliance_type`. When SKU is omitted or blank, a stable key is derived from the normalized name and model. Changing either field then creates a new identity, so explicit SKUs are preferable. Reordering rows does not change derived identities. Duplicate keys fail validation.
+
+Classification is explicit. If `category` is blank or absent, the old sheet format still imports; existing catalog assignments are preserved and new rows remain unclassified. Once category is set, brand and the category's required fields must be valid. A phone cannot use appliance-only fields, and an appliance cannot use a phone series. Re-save an existing sheet with the new columns to make its products available in catalog suggestions. No category or model is guessed from a product name.
 
 Condition is optional; a missing or blank value is stored as unknown (`null`). Other condition descriptions are accepted, and previews and inventory responses include `condition`. Use separate SKUs for the same phone model offered in different conditions. Importing a blank condition clears any previously imported condition for that SKU.
 
 Use numbers or plain decimal text for prices. Comma grouping such as `1,234.50` is accepted; currency symbols and locale formats such as `1.234,50` are rejected. Money is stored as integer minor units: `425000.00 NGN` becomes `42500000` kobo. Excess decimal precision is rejected rather than rounded. Entirely blank rows are ignored; an empty sheet cannot clear inventory.
 
-Normal links such as `https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0` are accepted. `gid` selects the tab; without it, the first tab is used. Published-to-web and export links are not accepted. The app builds its own Google API URLs and never fetches the seller's URL directly.
+Normal links such as `https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0` are accepted. `gid` selects the tab; without it, the first tab is used. Published-to-web and export links are not accepted. The app builds its own Google CSV export URL and follows only supported Google download redirects.
 
 ## Seller API
 
 All request bodies use `Content-Type: application/json`. Seller registration and login are public. Protected endpoints require `Authorization: Bearer <accessToken>`; use HTTPS in deployment. Ownership comes from the authenticated account's immutable ID. HTTP Basic, form login, and authentication cookies are disabled.
+
+For registration and login in Postman, choose **No Auth** and remove any manually configured `Authorization` header. An invalid or expired bearer token is rejected even on public endpoints because JWT authentication runs before route authorization. Use `POST` with the exact documented path (without a trailing slash), and select **Body → raw → JSON**. Both registration paths create a SELLER account; `/api/v1/auth/register` is a compatibility alias. Internal error dispatches preserve the original error status, such as `415` for an unsupported content type.
 
 These PowerShell examples use a local test seller. Choose a different password for actual use:
 
@@ -110,7 +111,7 @@ $session = Invoke-RestMethod "$api/auth/login" -Method Post -ContentType 'applic
 $headers = @{ Authorization = "Bearer $($session.accessToken)" }
 ```
 
-### Step 1: seller CRUD and saving a sheet link
+### Seller profiles and importing a saved sheet
 
 Registration above creates the seller. Read and update the profile:
 
@@ -135,7 +136,20 @@ Invoke-RestMethod "$api/seller/me/sheet" -Method Put -Headers $headers -ContentT
 Invoke-RestMethod "$api/seller/me" -Headers $headers
 ```
 
-The response includes `googleSheetUrl` (null until a link is saved). Each seller has one saved link; sending another replaces it. Saving validates the URL format and persists it in PostgreSQL. It does not fetch the sheet, verify access, create an import, or modify inventory. **No Google account or service-account credentials are needed for this step.** Configure Google access above when you are ready to import contents.
+The response includes `googleSheetUrl` (null until a link is saved). Each seller has one saved link. Saving or replacing it downloads the sheet, validates every product row, and applies its inventory to PostgreSQL in the same transaction as saving the link. The response remains a seller profile. Read the imported products with `GET /api/v1/seller/inventory`; their database IDs can be used to delete individual items.
+
+Matching SKUs are updated, new SKUs are inserted, and products omitted from the sheet become inactive. Re-saving the same sheet updates existing products without creating duplicate SKUs. Invalid rows or an empty sheet return `422 SHEET_VALIDATION_FAILED` with `importId` and row-specific `errors`, leaving the previous link and inventory unchanged. An import record is retained for diagnostics. If inventory changed while the sheet was being read, the request returns `409 IMPORT_STALE`; retry saving the sheet.
+
+`GET /api/v1/seller/me/sheet` reads the current source rows without changing PostgreSQL. There is no startup backfill or background synchronization. For links saved before automatic import was added, send the same `PUT /api/v1/seller/me/sheet` once to populate inventory.
+
+To delete one imported item from PostgreSQL, use its `id` from the inventory response:
+
+```http
+DELETE /api/v1/seller/inventory/{id}
+Authorization: Bearer <accessToken>
+```
+
+This returns `204` and deletes only that seller's database item. Another seller's item or an unknown ID returns `404 ITEM_NOT_FOUND`. Deletion needs no Google request and leaves the source sheet and import history unchanged. Earlier previews become stale. A later explicit re-import or re-save can restore products still present in the sheet.
 
 Remove the saved link:
 
@@ -145,9 +159,9 @@ Invoke-RestMethod "$api/seller/me/sheet" -Method Delete -Headers $headers
 
 To permanently delete the authenticated seller account, use `DELETE /api/v1/seller/me`. This returns `204` and removes the account, saved link, owned inventory, and import history in one transaction. Other sellers are unaffected. The deleted credentials no longer authenticate.
 
-### Inventory import: preview and confirmation
+### Optional inventory import: preview and confirmation
 
-Submit a sheet to create an import preview:
+Use this separate flow when you want to review changes before applying them. Submit a sheet to create an import preview, or use `POST /api/v1/seller/inventory/imports/saved` without a body to preview your saved URL:
 
 ```powershell
 $request = @{ url = 'https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit#gid=0' } | ConvertTo-Json
@@ -164,7 +178,7 @@ $result = Invoke-RestMethod "$api/seller/inventory/imports/$($preview.id)/confir
 Invoke-RestMethod "$api/seller/inventory?page=0&size=50" -Headers $headers
 ```
 
-Confirmation imports the saved snapshot that was previewed. Changes made to Google Sheets after preview require a new import. Replacement is atomic: matching SKUs are updated, new SKUs are inserted, and omitted SKUs become inactive. A failure rolls the transaction back. Other sellers' inventory is unaffected. Confirming the same completed import again is idempotent. If another import has already changed inventory since a preview was created, that preview is stale and must be recreated.
+Confirmation imports the saved snapshot that was previewed. Changes made to Google Sheets after preview require a new import. Replacement is atomic: matching SKUs are updated, new SKUs are inserted, and omitted SKUs become inactive. A failure rolls the transaction back. Other sellers' inventory is unaffected. Confirming the same completed import again is idempotent. An import or item deletion after a preview makes that preview stale; create a fresh preview before applying it.
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
@@ -175,16 +189,48 @@ Confirmation imports the saved snapshot that was previewed. Changes made to Goog
 | `GET` | `/api/v1/seller/me` | Inspect the authenticated seller profile |
 | `PUT` | `/api/v1/seller/me` | Update email, display name, and default currency |
 | `DELETE` | `/api/v1/seller/me` | Permanently delete the account and its inventory/import history |
-| `PUT` | `/api/v1/seller/me/sheet` | Save or replace the sheet link; body: `{"url":"https://docs.google.com/spreadsheets/d/SHEET_ID/edit"}` |
+| `PUT` | `/api/v1/seller/me/sheet` | Save the sheet link and immediately import its products; body: `{"url":"https://docs.google.com/spreadsheets/d/SHEET_ID/edit"}` |
+| `GET` | `/api/v1/seller/me/sheet` | Read source rows without changing inventory |
 | `DELETE` | `/api/v1/seller/me/sheet` | Remove the saved link without changing inventory |
 | `POST` | `/api/v1/seller/inventory/imports` | Fetch, validate, and save an import preview |
+| `POST` | `/api/v1/seller/inventory/imports/saved` | Preview the saved sheet without supplying its URL again |
 | `GET` | `/api/v1/seller/inventory/imports/{id}` | Read an owned import and its validation results |
 | `POST` | `/api/v1/seller/inventory/imports/{id}/confirm` | Apply a valid preview; body: `{"confirm":true}` |
 | `GET` | `/api/v1/seller/inventory?page=0&size=50` | List the seller's active inventory, maximum page size 200 |
+| `DELETE` | `/api/v1/seller/inventory/{id}` | Delete an owned database item without modifying the sheet |
 
-Validation and import failures return `application/problem+json` with a stable `code`. Missing/inaccessible sheets return `422`; invalid URLs return `400`; unavailable configuration returns `503`; upstream Google failures return `502`; invalid or stale confirmations return `409`. Another seller's import returns `404`.
+Validation and import failures return `application/problem+json` with a stable `code`. Missing/inaccessible sheets or invalid inventory rows on save return `422`; invalid URLs return `400`; upstream Google failures return `502`; invalid or stale confirmations return `409`. Another seller's import or inventory item returns `404`.
 
-Imports run synchronously for this first version, with 10,000 data-row, 64-column, and 8 MiB response limits, and bounded Google API timeouts. Override `app.sheets.*` properties for deployment as needed. There is no background sync: submit a new link import when inventory changes. Keep the service key available only to the backend.
+Imports run synchronously with the current 1,000 data-row, 64-column, and 8 MiB response limits and bounded Google timeouts. Override `app.sheets.*` properties for deployment as needed. There is no background sync: re-save the link or use preview/confirmation when you want to import sheet changes. Google access remains read-only for every operation.
+
+## Catalog and price browsing
+
+The shared catalog uses Java inheritance: abstract `Item`, `Gadget`, and `ElectricalAppliance`, persisted using joined tables `items`, `gadget_items`, and `electrical_appliance_items`. Gadgets have a type such as PHONE, HEADSET, LAPTOP or PC; only phone gadgets require a series. Each seller's `inventory_items` row can reference an item while retaining its own price, currency, condition, quantity, and SKU. Equivalent normalized catalog definitions share an item ID. Deleting a seller listing leaves the shared catalog item and other sellers' offers intact. Migration V7 preserves existing phone IDs while moving them under GADGET/PHONE.
+
+Anyone can read these catalog routes without registering or logging in:
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/catalog/domains` | Choose `GADGET` or `ELECTRICAL_APPLIANCE` |
+| `GET` | `/api/v1/catalog/{domain}/brands` | Available brands within the selected domain |
+| `GET` | `/api/v1/catalog/{domain}/options?brand=Samsung` | Phone series, or appliance types/sizes/features |
+| `GET` | `/api/v1/catalog/{domain}/items?brand=Samsung&gadgetType=PHONE&series=S` | Paginated exact items; gadgets require type, phone gadgets require series |
+| `GET` | `/api/v1/catalog/{domain}/items/{id}` | Exact item within its domain |
+| `GET` | `/api/v1/catalog/{domain}/items/{id}/offers?currency=NGN` | Seller prices, sorted within one currency |
+
+Appliance item filters are `applianceType`, `applianceSize`, and `feature`. `q` searches names/model codes. Pagination uses `page` and `size`; `applianceSize` is the physical size filter. Offers support an optional exact, case-insensitive `condition` filter. No exchange-rate conversion is performed. Suggestions and offers exclude inactive listings, known zero stock, and disabled sellers; unknown stock remains eligible. Each query carries the selected domain, so phone and appliance suggestions cannot mix.
+
+`POST /api/v1/management/items` lets an Admin create a definition independently of a sheet. `PUT /api/v1/seller/inventory/{id}/item` with `{"itemId":"UUID"}` lets an owner classify an existing listing; Admins can use `/api/v1/management/sellers/{sellerId}/inventory/{id}/item`. Classification happens in the database and leaves Google Sheets unchanged. It also makes earlier inventory previews stale.
+
+See [the catalog guide](docs/item-catalog.md) for gadget/appliance examples, import rules, and API requests.
+
+## Telegram and admin reference prices
+
+Ch3cker supports private Telegram conversations without customer registration or login. It saves Telegram profiles and supplied names, guides domain/type selection, and uses local Ollama for model recognition and evidence-backed specification extraction. Product answers fetch current public sources and show specifications in tables, with side-by-side columns for comparisons and links to checked sources. Unverified fields remain explicit. Prices come from the database: admin reference prices take precedence over eligible seller averages. Customers can browse seller offers in tables, save their preferred option and continue through the supplied contact link. Conversations expire after one idle hour or end on `cancel`.
+
+Add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ENABLED=true` to `.env`, keep Ollama running with the configured model downloaded (default `gemma4:e2b-it-q4_K_M`), then restart the application. Public specification lookups require internet access but no API account. Telegram uses long polling; no public webhook is needed. Open `/admin/index.html` for admin reference prices and Telegram customer selections. Historical selection snapshots remain after listing deletion. WhatsApp integration remains future work. See [bot setup and live-source coverage](docs/telegram-bot.md).
+
+See [Telegram setup, flow, APIs and storage](docs/telegram-bot.md) for configuration, first-run checks and limitations. Only safe catalog GET routes are public; management data and customer profiles require Admin/Manager access.
 
 ## Roles and security
 
@@ -195,7 +241,7 @@ Every login belongs to an `app_users` account. Seller-specific data lives in `se
 | `ADMIN` | All implemented account and seller permissions; read and write across sellers through `/api/v1/management` |
 | `MANAGER` | Read all accounts, sellers, inventory, and import history through management endpoints; no business mutations |
 | `SELLER` | Read and change their own seller profile, sheet link, inventory imports, and account |
-| `USER` | Read their own shared account and sign out; additional user features can define their own account permissions later |
+| `USER` | Read their own shared account, browse domain-scoped catalog items and seller prices, and sign out |
 
 Only seller registration is implemented. Registration requests cannot assign roles or permissions. There are no public Admin, Manager, or User registration endpoints and no seeded administrator credentials. To provision the first Admin, register an account and have a trusted database administrator run this once, replacing the email:
 
@@ -221,4 +267,4 @@ Authentication failures return `401 UNAUTHENTICATED`; insufficient permissions r
 mvn.cmd test
 ```
 
-Tests use H2 in PostgreSQL compatibility mode with the actual Flyway migrations. Google requests and credential discovery are mocked, so tests require neither a Google account nor a running PostgreSQL or Ollama instance. The suite covers registration, JWT login and validation, role restrictions, service ownership checks, token revocation, disabled accounts, migration of existing seller data, Swagger UI, seller CRUD and deletion isolation, keyless Sheets token scoping and refresh, sheet parsing, staged imports, replacement, and idempotency.
+Tests use H2 in PostgreSQL compatibility mode with the actual Flyway migrations. Google requests are mocked, so tests require neither a Google account nor a running PostgreSQL or Ollama instance. The suite covers registration, JWT validation, role and ownership restrictions, token revocation, account migration, Swagger UI, automatic sheet imports, row validation, database-only item deletion, stale previews, read-only CSV downloads, staged imports, replacement, and idempotency.

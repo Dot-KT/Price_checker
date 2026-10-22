@@ -1,17 +1,19 @@
 # Price Checker — Software Architecture
 
-**Status:** Proposed first-release architecture  
-**Date:** 15 October 2026
+**Status:** Implemented inventory/catalog/Telegram MVP, with future architecture notes below
+**Updated:** 22 October 2026
+
+The current implementation runs Telegram long polling and durable reply processing inside the Spring Boot application, alongside the REST API. It uses the local Ollama chat API for request recognition and evidence-backed specification extraction, with fresh public manufacturer/Wikipedia lookups before product answers. Specifications, comparisons, prices and seller offer details use tables. Admin reference prices and seller averages come from PostgreSQL. The admin page at `/admin/index.html` manages reference prices and reads Telegram customer selections. WhatsApp, case management, a separate worker deployment and a full seller web portal remain planned. See [the Telegram implementation guide](docs/telegram-bot.md) for the implemented flow; the diagrams below describe the broader target architecture.
 
 ## 1. Product scope
 
-The implemented Google Sheets integration uses keyless ADC plus service-account impersonation to obtain short-lived, read-only Sheets tokens. Sellers share spreadsheets with the configured Sheets service account as Viewer. Console IAM bindings authorize the local developer or attached cloud runtime; downloadable service-account private keys are not used. See [keyless setup](docs/google-sheets-keyless.md).
+The implemented Google Sheets integration downloads publicly shared CSV exports using HTTP GET. Sellers select Anyone with the link / Viewer and allow downloads; no Google credentials or write permissions are needed. Saving a sheet validates and imports its inventory into PostgreSQL. Sellers can delete owned database items without changing the original sheet. The optional preview/confirmation flow remains available, and inventory revisions prevent earlier previews from undoing later imports or deletions.
 
 Price Checker has three user surfaces:
 
 - **Seller/admin web portal:** sellers upload a Google Sheet, maintain their own inventory, edit items, and replace their inventory with a new sheet. Admins can inspect all sellers, inventories, and cases.
 - **WhatsApp and Telegram:** buyers ask for products and prices. The bot searches the shared catalog and returns matching sellers, prices, and availability.
-- **AI assistance:** understands free-text requests, asks a follow-up when needed, and suggests reply buttons. Product facts and prices come from PostgreSQL, not from generated text.
+- **AI assistance:** understands free-text requests and answers specifications/comparisons from Ollama knowledge, with uncertainty qualified. Prices, catalog matches and seller availability come from PostgreSQL.
 
 ## 2. Recommended first-release shape
 
@@ -108,11 +110,14 @@ Use UUID primary keys and UTC timestamps. Store money as integer minor units (fo
 
 - **app_users**: `id`, `email`, `password_hash`, `role` (`ADMIN`, `MANAGER`, `SELLER`, `USER`), `enabled`, `token_version`, optimistic-lock revision, timestamps. Seller profiles share the account UUID. Only SELLER self-registration is currently exposed.
 - **sellers**: `id`, `user_id`, `display_name`, `status`, `default_currency`, contact and channel identifiers.
-- **products**: canonical product identity when useful: `id`, `name`, normalized name, brand/category, model.
-- **inventory_items**: `id`, `seller_id`, optional `product_id`, seller SKU, name, model, description, optional free-text condition (`item_condition`), price_minor, currency, availability/quantity, source row, timestamps, `is_active`.
+- **items**: implemented shared identity with category, name, brand, normalized brand key, model/variant, and a unique normalized definition hash. Abstract Java `Item` uses joined inheritance.
+- **gadget_items**: implemented `Gadget` subtype with gadget type and optional phone series; its ID references `items`. V7 migrates existing phone records without changing IDs.
+- **electrical_appliance_items**: implemented `ElectricalAppliance` subtype with appliance type, size/capacity, and features; its ID references `items`.
+- **inventory_items**: `id`, `seller_id`, optional `item_id`, seller SKU, name, model, description, optional free-text condition (`item_condition`), price_minor, currency, availability/quantity, source row, timestamps, `active`. Prices and condition belong to each seller's offer, separately from shared item identity.
 - **sheet_imports**: `id`, `seller_id`, source URL/reference, status, row counts, validation summary, started/completed timestamps, initiating user.
 - **sheet_import_rows**: import ID, row number, raw/normalized values, validation errors; retain only as long as needed for diagnosis/audit.
-- **conversations**: channel, external chat/user ID, state JSON, last activity, optional linked user.
+- **telegram_users**, **telegram_conversations**, **telegram_updates**: implemented profiles, state/activity/selection history and durable processing/delivery receipts. Telegram identities do not create privileged app accounts.
+- **price_checker_intel**: implemented admin reference prices per item and currency, with source notes and update attribution.
 - **messages**: conversation, provider message ID, direction, message type, redacted content/metadata, delivery status, timestamp.
 - **cases**: `id`, optional seller/conversation, category, description, status, assigned admin, timestamps.
 - **audit_events**: actor, action, entity type/ID, safe before/after summary, timestamp.
@@ -124,16 +129,18 @@ Useful constraints/indexes: unique `(seller_id, seller_sku)` when SKU is present
 
 ### Seller imports or replaces inventory
 
-1. Seller signs in and submits a Google Sheets URL. The server checks that it is an accepted Google Sheets URL and stores it as an import request; never fetch arbitrary URLs (SSRF protection).
-2. Require the sheet to be shared with a designated service identity or use a supported OAuth flow. A link alone does not grant the application access. Do not accept credentials in the URL.
-3. Worker reads the sheet using the Google Sheets API, maps expected headers (`no.`, `name`, `model`, `description`, `price`, and agreed optional columns), and validates every row.
-4. Show an import preview with valid/error row counts and let the seller correct data or confirm according to the product rule. Do not silently accept a partially invalid replacement.
-5. On confirmation, use a database transaction to apply the new snapshot: upsert rows by seller SKU (or a documented stable key), mark removed listings inactive, and record the import. A failed import leaves the current inventory intact.
-6. Publish an import result in the portal and audit the change. Manual edits use the same inventory services and update audit history.
+1. Seller signs in and saves an accepted Google Sheets URL using `PUT /api/v1/seller/me/sheet`. The server constructs a Google CSV export URL; arbitrary download hosts are rejected.
+2. The sheet must allow Anyone with the link / Viewer and viewer downloads. The integration uses HTTP GET without Google credentials and never changes the source sheet.
+3. The request reads the sheet synchronously, maps headers (`sku` or `no.`, `name`, `model`, `description`, `condition`, `price`, `currency`, `quantity`), and validates every row before applying changes.
+4. Valid data is imported immediately: a transaction locks the seller, checks the inventory revision, upserts products by seller SKU, deactivates omitted products, completes the import record, and saves the link. Invalid data leaves the previous link and inventory unchanged and returns row errors.
+5. The separate preview/confirmation endpoints remain available for reviewing a snapshot before applying it. Confirmations reject previews made before a later import or item deletion.
+6. `GET /api/v1/seller/inventory` reads PostgreSQL. `DELETE /api/v1/seller/inventory/{id}` deletes an owned database item without contacting Google. The source sheet and import history remain available.
 
-Define whether re-upload means **replace all** or **merge/update**. Recommended default: full snapshot replacement for that seller, with soft deactivation of omitted products and a clear preview/confirmation.
+Re-import uses full snapshot replacement for that seller. An explicit new import or re-save can restore a deleted product still present in the sheet. Reading the source sheet does not import it, and no background synchronization runs.
 
 ### Buyer searches through WhatsApp or Telegram
+
+The implemented catalog API supports gadgets -> gadget type -> brand -> optional phone series -> exact item, or electrical appliances -> brand -> type/size/features -> exact model. The implemented Telegram flow asks for a name, domain/type and free-text request, then uses Ollama to identify models and answer product questions. Prices use admin intel before seller averages. Customers can browse sellers and save a selection for admin lookup. See [the catalog guide](docs/item-catalog.md) and [Telegram guide](docs/telegram-bot.md). The following webhook/case workflow remains a future WhatsApp architecture proposal.
 
 1. Provider calls a verified webhook. Validate provider signatures/tokens and deduplicate by provider message ID.
 2. Channel adapter normalizes the message and sends it to the conversation service.
@@ -178,7 +185,7 @@ The implemented security flow uses Spring Security's filter chain and OAuth2 res
 - **Database:** PostgreSQL. Use a query builder or ORM with migrations; keep important inventory search and transaction logic in explicit repository/service functions.
 - **Queue:** PostgreSQL-backed jobs initially, or Redis with a Spring-compatible queue integration when retry volume/concurrency warrants it.
 - **Portal:** React or another simple web UI, calling the versioned API. Admin and seller views share components but use role-gated navigation and server-side authorization.
-- **Sheets:** Google Sheets API, with a dedicated service identity or OAuth. Provide a downloadable template and clear permissions instructions.
+- **Sheets:** read-only public CSV exports with Viewer/download access. Provide a downloadable template and clear permissions instructions. Private-sheet authentication would require a separate future integration.
 - **AI:** Spring AI connected to a self-hosted local model runtime such as Ollama. Use a local chat model for intent extraction and optionally a local embedding model for semantic search. Keep inference endpoints on a private network, do not configure cloud model credentials, and ensure the bot falls back to buttons/basic keyword search if the model is down. Spring AI is the Java integration layer; the local runtime and model perform the inference.
 - **Hosting:** deploy API and worker as separate processes/containers; choose managed PostgreSQL near the application region. Final provider choice should consider budget, Nigeria latency, backups, connection pooling, and supported region availability.
 
@@ -196,7 +203,7 @@ The implemented security flow uses Spring Security's filter chain and OAuth2 res
 
 - Exact inventory columns and whether sellers provide a stable SKU/product ID.
 - Whether duplicate product listings across sellers should be grouped into one result.
-- Google Sheet access model: shared-to-service-account or OAuth per seller.
+- Whether a future release should support private sheets using a service identity or seller OAuth with read-only scopes.
 - Import rule: full replacement or merge; behavior for invalid rows and duplicate rows.
 - Quantity/stock semantics and whether price comparison includes delivery/location.
 - WhatsApp provider choice and whether the first release supports WhatsApp Cloud API directly.

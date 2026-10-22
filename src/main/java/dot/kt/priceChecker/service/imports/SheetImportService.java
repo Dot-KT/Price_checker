@@ -5,6 +5,7 @@ import dot.kt.priceChecker.dto.sheets.ParsedInventoryItem;
 import dot.kt.priceChecker.dto.sheets.SheetParseResult;
 import dot.kt.priceChecker.dto.sheets.SheetRowError;
 import dot.kt.priceChecker.dto.sheets.SheetSnapshot;
+import dot.kt.priceChecker.dto.sellers.SellerResponse;
 import dot.kt.priceChecker.entities.imports.SheetImport;
 import dot.kt.priceChecker.entities.inventory.InventoryItem;
 import dot.kt.priceChecker.entities.sellers.Seller;
@@ -15,6 +16,7 @@ import dot.kt.priceChecker.repo.inventory.InventoryItemRepository;
 import dot.kt.priceChecker.repo.sellers.SellerRepository;
 import dot.kt.priceChecker.service.sellers.SellerService;
 import dot.kt.priceChecker.service.security.CurrentUserService;
+import dot.kt.priceChecker.service.catalog.CatalogService;
 import dot.kt.priceChecker.dto.common.PageQuery;
 import dot.kt.priceChecker.dto.common.PageResponse;
 import org.springframework.data.domain.PageRequest;
@@ -22,7 +24,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.security.access.prepost.PreAuthorize;
 import dot.kt.priceChecker.service.sheets.SheetParser;
 import dot.kt.priceChecker.service.sheets.SheetReader;
-import dot.kt.priceChecker.service.sheets.SellerSheetService;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,11 +48,11 @@ public class SheetImportService {
     private final InventoryItemRepository inventory;
     private final JsonMapper json;
     private final CurrentUserService currentUser;
-    private final SellerSheetService sheets;
+    private final CatalogService catalog;
 
     public SheetImportService(SellerService sellers, SellerRepository sellerRepository,
             SheetReader reader, SheetParser parser, SheetImportRepository imports,
-            InventoryItemRepository inventory, JsonMapper json, CurrentUserService currentUser, SellerSheetService sheets) {
+            InventoryItemRepository inventory, JsonMapper json, CurrentUserService currentUser, CatalogService catalog) {
         this.sellers = sellers;
         this.sellerRepository = sellerRepository;
         this.reader = reader;
@@ -60,7 +61,7 @@ public class SheetImportService {
         this.inventory = inventory;
         this.json = json;
         this.currentUser = currentUser;
-        this.sheets = sheets;
+        this.catalog = catalog;
     }
 
     // Reading Google happens before persistence, without holding a database transaction/lock.
@@ -71,7 +72,7 @@ public class SheetImportService {
     public ImportResponse previewSaved() { return previewSaved(currentUser.id()); }
 
     @PreAuthorize("@sellerAccess.canWrite(#sellerId)")
-    public ImportResponse previewSaved(UUID sellerId) { return preview(sellerId, sheets.savedLink(sellerId)); }
+    public ImportResponse previewSaved(UUID sellerId) { return preview(sellerId, sellers.savedSheetLink(sellerId)); }
 
     @PreAuthorize("@sellerAccess.canWrite(#sellerId)")
     public ImportResponse preview(UUID sellerId, String url) {
@@ -105,11 +106,18 @@ public class SheetImportService {
 
     @Transactional
     @PreAuthorize("@sellerAccess.canWrite(#sellerId)")
+    public SellerResponse confirmAndSaveSheet(UUID sellerId, UUID id, String url) {
+        confirm(sellerId, id);
+        return sellers.persistSheetLink(sellerId, url);
+    }
+
+    @Transactional
+    @PreAuthorize("@sellerAccess.canWrite(#sellerId)")
     public ImportResponse confirm(UUID sellerId, UUID id) {
-        Seller account = sellers.requireSeller(sellerId);
         // Serialize replacements for this seller, including repeated/concurrent confirmations.
-        Seller seller = sellerRepository.findByIdForUpdate(account.getId())
-                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "SELLER_NOT_FOUND", "Seller account not found."));
+        // Load the seller under the lock so its revision is current after waiting for another writer.
+        Seller seller = sellerRepository.findByIdForUpdate(sellerId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "SELLER_NOT_FOUND", "Seller account not found."));
         SheetImport sheetImport = ownedImport(id, seller.getId());
         if (sheetImport.getStatus() == ImportStatus.COMPLETED) {
             return response(sheetImport);
@@ -118,7 +126,8 @@ public class SheetImportService {
             throw new ApiException(HttpStatus.CONFLICT, "IMPORT_INVALID",
                     "Fix the sheet errors and submit a new preview before confirming.");
         }
-        if (imports.existsBySellerIdAndStatusAndCompletedAtAfter(
+        if (sheetImport.getBaseInventoryRevision() != seller.getInventoryRevision()
+                || imports.existsBySellerIdAndStatusAndCompletedAtAfter(
                 seller.getId(), ImportStatus.COMPLETED, sheetImport.getCreatedAt())) {
             throw new ApiException(HttpStatus.CONFLICT, "IMPORT_STALE",
                     "Inventory changed after this preview. Submit the sheet again to create a fresh preview.");
@@ -135,14 +144,18 @@ public class SheetImportService {
         for (ParsedInventoryItem row : rows) {
             InventoryItem item = existing.remove(row.sellerSku());
             if (item == null) {
-                inventory.save(new InventoryItem(seller, row.sellerSku(), row.name(), row.model(),
+                item = inventory.save(new InventoryItem(seller, row.sellerSku(), row.name(), row.model(),
                         row.description(), row.condition(), row.priceMinor(), row.currency(), row.quantity(), row.sourceRow()));
             } else {
                 item.update(row.name(), row.model(), row.description(), row.condition(), row.priceMinor(),
                         row.currency(), row.quantity(), row.sourceRow());
             }
+            if (row.catalog() != null) {
+                item.assignItem(catalog.resolve(row.name(), row.model(), row.catalog()));
+            }
         }
         existing.values().stream().filter(InventoryItem::isActive).forEach(InventoryItem::deactivate);
+        seller.advanceInventoryRevision();
         sheetImport.complete();
         inventory.flush();
         imports.flush();

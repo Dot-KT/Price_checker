@@ -52,7 +52,7 @@ public class SellerController {
     }
 
     @PutMapping(value = "/seller/me/sheet", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "Save or replace your public inventory sheet link", description = "Checks anonymous read access before saving. Private or download-blocked sheets return 422 SHEET_NOT_PUBLIC. Does not import inventory.")
+    @Operation(summary = "Save a public sheet and import its inventory", description = "Downloads and validates the sheet, then saves the link and imports all products atomically. Only Viewer access is needed; Google Sheets is never modified. Invalid rows return 422 with row errors and leave the previous link and inventory unchanged.")
     public SellerResponse saveSheet(@Valid @RequestBody SaveSellerSheetRequest request) {
         return sheets.save(request.url());
     }

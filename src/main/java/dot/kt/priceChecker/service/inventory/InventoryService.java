@@ -5,6 +5,8 @@ import dot.kt.priceChecker.dto.inventory.InventoryPage;
 import dot.kt.priceChecker.entities.inventory.InventoryItem;
 import dot.kt.priceChecker.exceptions.common.ApiException;
 import dot.kt.priceChecker.repo.inventory.InventoryItemRepository;
+import dot.kt.priceChecker.repo.sellers.SellerRepository;
+import dot.kt.priceChecker.repo.catalog.ItemRepository;
 import dot.kt.priceChecker.service.sellers.SellerService;
 import dot.kt.priceChecker.service.security.CurrentUserService;
 import dot.kt.priceChecker.dto.common.PageQuery;
@@ -22,17 +24,57 @@ public class InventoryService {
     private final SellerService sellers;
     private final InventoryItemRepository inventory;
     private final CurrentUserService currentUser;
+    private final SellerRepository sellerRepository;
+    private final ItemRepository items;
 
-    public InventoryService(SellerService sellers, InventoryItemRepository inventory, CurrentUserService currentUser) {
+    public InventoryService(SellerService sellers, InventoryItemRepository inventory, CurrentUserService currentUser,
+            SellerRepository sellerRepository, ItemRepository items) {
         this.sellers = sellers;
         this.inventory = inventory;
         this.currentUser = currentUser;
+        this.sellerRepository = sellerRepository;
+        this.items = items;
     }
 
     @Transactional(readOnly = true)
     @PreAuthorize("hasAuthority('seller:read')")
     public InventoryPage inventory(PageQuery query) {
         return inventory(currentUser.id(), query);
+    }
+
+    @Transactional
+    @PreAuthorize("hasAuthority('seller:write')")
+    public void delete(UUID id) {
+        UUID sellerId = currentUser.id();
+        // Use the same seller lock as imports so a concurrent replacement cannot undo this deletion.
+        var seller = sellerRepository.findByIdForUpdate(sellerId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "SELLER_NOT_FOUND", "Seller account not found."));
+        var item = inventory.findByIdAndSellerId(id, sellerId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "ITEM_NOT_FOUND", "Inventory item not found."));
+        inventory.delete(item);
+        seller.advanceInventoryRevision();
+        inventory.flush();
+    }
+
+    @Transactional
+    @PreAuthorize("hasAuthority('seller:write')")
+    public InventoryItemResponse assignItem(UUID id, UUID itemId) {
+        return assignItem(currentUser.id(), id, itemId);
+    }
+
+    @Transactional
+    @PreAuthorize("@sellerAccess.canWrite(#sellerId)")
+    public InventoryItemResponse assignItem(UUID sellerId, UUID id, UUID itemId) {
+        var seller = sellerRepository.findByIdForUpdate(sellerId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "SELLER_NOT_FOUND", "Seller account not found."));
+        var listing = inventory.findByIdAndSellerId(id, sellerId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "ITEM_NOT_FOUND", "Inventory item not found."));
+        var item = items.findById(itemId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "ITEM_NOT_FOUND", "Catalog item not found."));
+        listing.assignItem(item);
+        seller.advanceInventoryRevision();
+        inventory.flush();
+        return InventoryItemResponse.from(listing);
     }
 
     @Transactional(readOnly = true)

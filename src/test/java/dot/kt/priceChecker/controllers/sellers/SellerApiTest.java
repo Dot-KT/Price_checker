@@ -7,6 +7,7 @@ import dot.kt.priceChecker.repo.imports.SheetImportRepository;
 import dot.kt.priceChecker.repo.inventory.InventoryItemRepository;
 import dot.kt.priceChecker.repo.sellers.SellerRepository;
 import dot.kt.priceChecker.service.sheets.SheetReader;
+import dot.kt.priceChecker.service.inventory.InventoryService;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +24,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
@@ -53,6 +56,7 @@ class SellerApiTest {
     @Autowired UserRepository users;
     @Autowired InventoryItemRepository inventory;
     @Autowired SheetImportRepository imports;
+    @Autowired InventoryService inventoryService;
     @MockitoBean SheetReader reader;
 
     @BeforeEach
@@ -61,6 +65,10 @@ class SellerApiTest {
         inventory.deleteAllInBatch();
         sellers.deleteAllInBatch();
         users.deleteAllInBatch();
+        when(reader.read(anyString())).thenAnswer(invocation -> new SheetSnapshot(
+                ((String) invocation.getArgument(0)).strip(), "Inventory", List.of(
+                List.<Object>of("sku", "name", "price", "condition"),
+                List.<Object>of("PHONE-1", "Phone", "100", "Mint"))));
     }
 
     @Test
@@ -119,7 +127,7 @@ class SellerApiTest {
     }
 
     @Test
-    void sellerCanSaveReplaceAndRemovePublicLinkWithoutImportingInventory() throws Exception {
+    void savingSheetImportsInventoryAndRemovingLinkPreservesDatabaseItems() throws Exception {
         Seller owner = register(EMAIL);
         Seller other = register("other@example.com");
         mvc.perform(put(SHEET).with(bearer(EMAIL, PASSWORD)).contentType(MediaType.APPLICATION_JSON)
@@ -129,6 +137,13 @@ class SellerApiTest {
         mvc.perform(get(ME).with(bearer(EMAIL, PASSWORD)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.googleSheetUrl").value(URL));
         assertThat(sellers.findById(other.getId()).orElseThrow().getGoogleSheetUrl()).isNull();
+        assertThat(inventory.findAllBySellerId(owner.getId())).singleElement().satisfies(item -> {
+            assertThat(item.getName()).isEqualTo("Phone");
+            assertThat(item.getCondition()).isEqualTo("Mint");
+            assertThat(item.getPriceMinor()).isEqualTo(10000);
+        });
+        assertThat(inventory.findAllBySellerId(other.getId())).isEmpty();
+        var itemId = inventory.findAllBySellerId(owner.getId()).getFirst().getId();
 
         String replacement = "https://docs.google.com/spreadsheets/d/replacement/view";
         mvc.perform(put(SHEET).with(bearer(EMAIL, PASSWORD)).contentType(MediaType.APPLICATION_JSON)
@@ -138,8 +153,10 @@ class SellerApiTest {
         mvc.perform(delete(SHEET).with(bearer(EMAIL, PASSWORD))).andExpect(status().isNoContent());
         mvc.perform(delete(SHEET).with(bearer(EMAIL, PASSWORD))).andExpect(status().isNoContent());
         assertThat(sellers.findById(owner.getId()).orElseThrow().getGoogleSheetUrl()).isNull();
-        assertThat(imports.count()).isZero();
-        assertThat(inventory.count()).isZero();
+        assertThat(imports.count()).isEqualTo(2);
+        assertThat(imports.findAll()).allMatch(sheetImport -> sheetImport.getCompletedAt() != null);
+        assertThat(inventory.count()).isEqualTo(1);
+        assertThat(inventory.findAll().getFirst().getId()).isEqualTo(itemId);
         verify(reader).read("  " + URL + "  ");
         verify(reader).read(replacement);
     }
@@ -189,8 +206,8 @@ class SellerApiTest {
                 .andExpect(jsonPath("$.sourceUrl").value(URL))
                 .andExpect(jsonPath("$.rows[1][0]").value("00001"))
                 .andExpect(jsonPath("$.rows[1][1]").value("Phone"));
-        assertThat(inventory.count()).isZero();
-        assertThat(imports.count()).isZero();
+        assertThat(inventory.count()).isEqualTo(1);
+        assertThat(imports.count()).isEqualTo(1);
         var preview = mvc.perform(post("/api/v1/seller/inventory/imports/saved").with(owner))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.status").value("PREVIEW")).andReturn();
         String id = json.readTree(preview.getResponse().getContentAsString()).path("id").asText();
@@ -210,7 +227,6 @@ class SellerApiTest {
     @Test
     void nonpublicLinksCannotReplaceSavedLinkAndRevokedAccessIsDetectedOnEveryRead() throws Exception {
         register(EMAIL);
-        when(reader.read(URL)).thenReturn(new SheetSnapshot(URL, "Inventory", List.of()));
         var owner = bearer(EMAIL, PASSWORD);
         mvc.perform(put(SHEET).with(owner).contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("url", URL)))).andExpect(status().isOk());
@@ -227,8 +243,115 @@ class SellerApiTest {
                 .andExpect(jsonPath("$.code").value("SHEET_NOT_PUBLIC"));
         mvc.perform(post("/api/v1/seller/inventory/imports/saved").with(owner))
                 .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value("SHEET_NOT_PUBLIC"));
-        assertThat(imports.count()).isZero();
+        assertThat(imports.count()).isEqualTo(1);
+        assertThat(inventory.count()).isEqualTo(1);
+    }
+
+    @Test
+    void invalidSheetRowsLeaveSavedLinkAndInventoryUnchangedAndReturnRowErrors() throws Exception {
+        Seller owner = register(EMAIL);
+        var token = bearer(EMAIL, PASSWORD);
+        mvc.perform(put(SHEET).with(token).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("url", URL))))
+                .andExpect(status().isOk());
+        var itemId = inventory.findAllBySellerId(owner.getId()).getFirst().getId();
+        String invalidUrl = "https://docs.google.com/spreadsheets/d/invalid-sheet/edit";
+        when(reader.read(invalidUrl)).thenReturn(new SheetSnapshot(invalidUrl, "Inventory", List.of(
+                List.<Object>of("sku", "name", "price"),
+                List.<Object>of("GOOD", "Valid phone", "200"),
+                List.<Object>of("BAD", "Broken price", "invalid"))));
+        mvc.perform(put(SHEET).with(token).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("url", invalidUrl))))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("SHEET_VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.importId").isNotEmpty())
+                .andExpect(jsonPath("$.errors[0].rowNumber").value(3))
+                .andExpect(jsonPath("$.errors[0].field").value("price"));
+        assertThat(sellers.findById(owner.getId()).orElseThrow().getGoogleSheetUrl()).isEqualTo(URL);
+        assertThat(inventory.findAll()).singleElement().satisfies(item -> {
+            assertThat(item.getId()).isEqualTo(itemId);
+            assertThat(item.getPriceMinor()).isEqualTo(10000);
+        });
+        when(reader.read(invalidUrl)).thenReturn(new SheetSnapshot(invalidUrl, "Inventory", List.of()));
+        mvc.perform(put(SHEET).with(token).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("url", invalidUrl))))
+                .andExpect(status().isUnprocessableEntity());
+        assertThat(inventory.count()).isEqualTo(1);
+    }
+
+    @Test
+    void deletingInventoryItemOnlyDeletesOwnedDatabaseRowAndDoesNotReadOrWriteSheet() throws Exception {
+        Seller owner = register(EMAIL);
+        Seller other = register("other@example.com");
+        var token = bearer(EMAIL, PASSWORD);
+        for (String email : List.of(EMAIL, other.getEmail())) {
+            mvc.perform(put(SHEET).with(bearer(email, PASSWORD)).contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("url", URL))))
+                    .andExpect(status().isOk());
+        }
+        var itemId = inventory.findAllBySellerId(owner.getId()).getFirst().getId();
+        String path = "/api/v1/seller/inventory/" + itemId;
+        clearInvocations(reader);
+        mvc.perform(delete(path)).andExpect(status().isUnauthorized());
+        mvc.perform(delete(path).with(bearer(other.getEmail(), PASSWORD)))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("ITEM_NOT_FOUND"));
+        assertThat(inventory.existsById(itemId)).isTrue();
+        mvc.perform(delete(path).with(token)).andExpect(status().isNoContent());
+        assertThat(inventory.existsById(itemId)).isFalse();
+        assertThat(inventory.findAllBySellerId(other.getId())).hasSize(1);
+        assertThat(imports.count()).isEqualTo(2);
+        mvc.perform(get("/api/v1/seller/inventory").with(token)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements").value(0));
+        verifyNoInteractions(reader);
+        mvc.perform(get(SHEET).with(token)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.rows[1][0]").value("PHONE-1"));
+        mvc.perform(delete(path).with(token)).andExpect(status().isNotFound());
+        mvc.perform(delete("/api/v1/seller/inventory/not-a-uuid").with(token))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void deletingItemMakesEarlierPreviewStaleButExplicitNewImportCanRestoreIt() throws Exception {
+        Seller owner = register(EMAIL);
+        var token = bearer(EMAIL, PASSWORD);
+        mvc.perform(put(SHEET).with(token).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("url", URL))))
+                .andExpect(status().isOk());
+        var preview = mvc.perform(post("/api/v1/seller/inventory/imports/saved").with(token))
+                .andExpect(status().isCreated()).andReturn();
+        String importId = json.readTree(preview.getResponse().getContentAsString()).path("id").asText();
+        var itemId = inventory.findAllBySellerId(owner.getId()).getFirst().getId();
+        mvc.perform(delete("/api/v1/seller/inventory/" + itemId).with(token)).andExpect(status().isNoContent());
+        mvc.perform(post("/api/v1/seller/inventory/imports/" + importId + "/confirm").with(token)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"confirm\":true}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IMPORT_STALE"));
         assertThat(inventory.count()).isZero();
+        mvc.perform(put(SHEET).with(token).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("url", URL))))
+                .andExpect(status().isOk());
+        assertThat(inventory.findAllBySellerId(owner.getId())).hasSize(1);
+    }
+
+    @Test
+    void itemDeletionDuringSheetDownloadPreventsSaveFromRestoringAnOutdatedSnapshot() throws Exception {
+        Seller owner = register(EMAIL);
+        var token = bearer(EMAIL, PASSWORD);
+        mvc.perform(put(SHEET).with(token).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("url", URL))))
+                .andExpect(status().isOk());
+        var itemId = inventory.findAllBySellerId(owner.getId()).getFirst().getId();
+        String replacement = "https://docs.google.com/spreadsheets/d/replacement/edit";
+        when(reader.read(replacement)).thenAnswer(invocation -> {
+            inventoryService.delete(itemId);
+            return new SheetSnapshot(replacement, "Inventory", List.of(
+                    List.<Object>of("sku", "name", "price"),
+                    List.<Object>of("PHONE-1", "Phone", "100")));
+        });
+        mvc.perform(put(SHEET).with(token).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("url", replacement))))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("IMPORT_STALE"));
+        assertThat(inventory.count()).isZero();
+        assertThat(sellers.findById(owner.getId()).orElseThrow().getGoogleSheetUrl()).isEqualTo(URL);
     }
 
     @Test

@@ -7,6 +7,9 @@ import dot.kt.priceChecker.dto.imports.ImportResponse;
 import dot.kt.priceChecker.dto.imports.ImportSheetRequest;
 import dot.kt.priceChecker.dto.imports.SellerImportTarget;
 import dot.kt.priceChecker.dto.inventory.InventoryPage;
+import dot.kt.priceChecker.dto.inventory.InventoryItemResponse;
+import dot.kt.priceChecker.dto.inventory.SellerInventoryItemTarget;
+import dot.kt.priceChecker.dto.catalog.AssignItemRequest;
 import dot.kt.priceChecker.dto.sellers.SaveSellerSheetRequest;
 import dot.kt.priceChecker.dto.sellers.SellerResponse;
 import dot.kt.priceChecker.dto.sellers.SellerTarget;
@@ -88,7 +91,7 @@ public class ManagementController {
     }
 
     @PutMapping(value = "/sellers/{sellerId}/sheet", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "Save a seller's public sheet link", description = "ADMIN only. Verifies anonymous read access before saving; does not import inventory.")
+    @Operation(summary = "Save a seller's public sheet and import inventory", description = "ADMIN only. Reads and validates the sheet, then saves the link and imports products atomically. The source sheet is never modified.")
     public SellerResponse saveSheet(@Valid @ParameterObject @ModelAttribute SellerTarget target,
             @Valid @RequestBody SaveSellerSheetRequest request) {
         return sheets.save(target.sellerId(), request.url());
@@ -113,6 +116,13 @@ public class ManagementController {
     public InventoryPage inventory(@Valid @ParameterObject @ModelAttribute SellerTarget target,
             @Valid @ParameterObject @ModelAttribute PageQuery query) {
         return inventory.inventory(target.sellerId(), query);
+    }
+
+    @PutMapping(value = "/sellers/{sellerId}/inventory/{id}/item", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Classify a seller's inventory listing", description = "ADMIN only. Links an existing listing to a shared catalog item without changing Google Sheets.")
+    public InventoryItemResponse assignItem(@Valid @ParameterObject @ModelAttribute SellerInventoryItemTarget target,
+            @Valid @RequestBody AssignItemRequest request) {
+        return inventory.assignItem(target.sellerId(), target.id(), request.itemId());
     }
 
     @GetMapping("/sellers/{sellerId}/inventory/imports")

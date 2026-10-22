@@ -1,3 +1,5 @@
-sku,name,model,description,condition,price,currency,quantity
-PHONE-001,Samsung Galaxy,A55,128GB unlocked,Brand new,425000.00,NGN,3
-PHONE-002,Apple iPhone,13,128GB,Used,550000.00,NGN,2
+sku,name,model,description,condition,price,currency,quantity,category,brand,gadget_type,series,appliance_type,size,features
+GADGET-001,Galaxy A55,A55/128GB,128GB unlocked,Brand new,425000.00,NGN,3,GADGET,Samsung,PHONE,A,,,
+GADGET-002,iPhone 13,13/128GB,128GB,Used,550000.00,NGN,2,GADGET,Apple,PHONE,iPhone 13,,,
+GADGET-003,ThinkPad T14,T14 Gen 3,16GB RAM and 512GB SSD,Used,650000.00,NGN,1,GADGET,Lenovo,LAPTOP,,,,
+APP-001,Hisense 43-inch TV,43A4K,Smart television,Brand new,250000.00,NGN,2,ELECTRICAL_APPLIANCE,Hisense,,,Television,43 inch,Smart TV;Full HD

@@ -23,6 +23,16 @@ app:
       access-token-minutes: 180
   sheets:
     max-rows: 1000
+  telegram:
+    enabled: ${TELEGRAM_ENABLED:false}
+    bot-token: ${TELEGRAM_BOT_TOKEN:}
+    conversation-timeout-seconds: 3600
+    poll-timeout-seconds: 25
+  ollama:
+    base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+    model: ${OLLAMA_MODEL:gemma4:e2b-it-q4_K_M}
+    timeout-seconds: ${OLLAMA_TIMEOUT_SECONDS:120}
+    structured-output: ${OLLAMA_STRUCTURED_OUTPUT:true}
 
 springdoc:
   paths-to-match: /api/**

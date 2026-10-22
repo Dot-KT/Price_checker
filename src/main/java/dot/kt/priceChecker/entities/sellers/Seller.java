@@ -36,6 +36,9 @@ public class Seller {
     @Column(name = "google_sheet_url", length = 2048)
     private String googleSheetUrl;
 
+    @Column(name = "inventory_revision", nullable = false)
+    private long inventoryRevision;
+
     protected Seller() {
     }
 
@@ -76,6 +79,14 @@ public class Seller {
 
     public String getGoogleSheetUrl() {
         return googleSheetUrl;
+    }
+
+    public long getInventoryRevision() {
+        return inventoryRevision;
+    }
+
+    public void advanceInventoryRevision() {
+        inventoryRevision = Math.incrementExact(inventoryRevision);
     }
 
     public void updateProfile(String email, String displayName, String defaultCurrency) {

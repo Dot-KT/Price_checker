@@ -3,6 +3,7 @@ package dot.kt.priceChecker.service.sheets;
 import dot.kt.priceChecker.config.sheets.SheetsProperties;
 import dot.kt.priceChecker.dto.sheets.ParsedInventoryItem;
 import dot.kt.priceChecker.dto.sheets.SheetRowError;
+import dot.kt.priceChecker.enums.catalog.ItemDomain;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -16,6 +17,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SheetParserTest {
     private final SheetsProperties properties = new SheetsProperties();
     private final SheetParser parser = new SheetParser(properties);
+
+    @Test
+    void gadgetSheetsRequireTypeAndNonPhoneGadgetsDoNotRequireSeries() {
+        var result = parser.parse(List.of(row("name", "price", "category", "brand", "gadget_type", "series"),
+                row("Laptop", "100", "GADGET", "Lenovo", "LAPTOP", ""),
+                row("Phone", "200", "GADGET", "Samsung", "PHONE", "S")), "NGN");
+        assertThat(result.errors()).isEmpty();
+        assertThat(result.items().getFirst().catalog().gadgetType()).isEqualTo(dot.kt.priceChecker.enums.catalog.GadgetType.LAPTOP);
+        assertThat(result.items().getFirst().catalog().series()).isNull();
+        var missing = parser.parse(List.of(row("name", "price", "category", "brand"), row("Laptop", "100", "GADGET", "Lenovo")), "NGN");
+        assertThat(missing.errors()).anyMatch(error -> error.field().equals("gadget_type"));
+    }
 
     @Test
     void parsesHeadersAmountsAndOptionalColumns() {
@@ -50,6 +63,47 @@ class SheetParserTest {
                 assertThat(error.rowNumber()).isEqualTo(2);
             });
         }
+    }
+
+    @Test
+    void parsesExplicitPhoneAndApplianceClassificationAndHeaderAliases() {
+        var result = parser.parse(List.of(
+                row("sku", "name", "price", "category", "company", "series", "type", "size", "features"),
+                row("PHONE", "Galaxy S24", "100", "Phones", " Samsung ", " S ", "", "", ""),
+                row("TV", "LG TV", "200", "Electrical appliances", "Life is good", "", "Television", "55 inch", "4K;Smart TV")), "NGN");
+        assertThat(result.errors()).isEmpty();
+        var phone = result.items().getFirst().catalog();
+        assertThat(phone.category()).isEqualTo(ItemDomain.GADGET);
+        assertThat(phone.brand()).isEqualTo("Samsung");
+        assertThat(phone.series()).isEqualTo("S");
+        var appliance = result.items().get(1).catalog();
+        assertThat(appliance.category()).isEqualTo(ItemDomain.ELECTRICAL_APPLIANCE);
+        assertThat(appliance.brand()).isEqualTo("LG");
+        assertThat(appliance.applianceType()).isEqualTo("Television");
+        assertThat(appliance.size()).isEqualTo("55 inch");
+    }
+
+    @Test
+    void legacyRowsWithoutCategoryStayUnclassifiedAndDoNotGuessTheirDomain() {
+        var result = parser.parse(List.of(row("name", "price", "brand", "series"),
+                row("Samsung phone", "100", "Samsung", "S")), "NGN");
+        assertThat(result.errors()).isEmpty();
+        assertThat(result.items().getFirst().catalog()).isNull();
+    }
+
+    @Test
+    void rejectsInvalidCategoryCrossDomainFieldsAndUnsafeCatalogText() {
+        var result = parser.parse(List.of(
+                row("sku", "name", "price", "category", "brand", "series", "appliance_type", "size", "features"),
+                row("A", "Phone", "100", "PHONE", "Samsung", "S", "Television", "", ""),
+                row("B", "Phone", "100", "PHONE", "Samsung", "", "", "", ""),
+                row("C", "TV", "100", "ELECTRICAL_APPLIANCE", "Hisense", "", "TV", "55 inch", "x".repeat(1001)),
+                row("D", "Phone", "100", "PHONE", "Sam\0sung", "S", "", "", ""),
+                row("E", "Toy", "100", "TOY", "Brand", "", "", "", "")), "NGN");
+        assertThat(result.items()).isEmpty();
+        assertThat(result.errors()).extracting(SheetRowError::field)
+                .contains("category", "series", "features", "brand");
+        assertThat(result.errors()).anyMatch(error -> error.rowNumber() == 4 && error.field().equals("features"));
     }
 
     @Test

@@ -1,0 +1,10 @@
+ALTER TABLE items DROP CONSTRAINT ck_item_category;
+UPDATE items SET category = 'GADGET' WHERE category = 'PHONE';
+ALTER TABLE items ADD CONSTRAINT ck_item_category CHECK (category IN ('GADGET', 'ELECTRICAL_APPLIANCE'));
+ALTER TABLE phone_items RENAME TO gadget_items;
+ALTER TABLE gadget_items DROP CONSTRAINT ck_phone_series;
+ALTER TABLE gadget_items ALTER COLUMN series DROP NOT NULL;
+ALTER TABLE gadget_items ADD COLUMN gadget_type VARCHAR(32) NOT NULL DEFAULT 'PHONE';
+ALTER TABLE gadget_items ADD CONSTRAINT ck_gadget_type CHECK (gadget_type IN ('PHONE', 'HEADSET', 'LAPTOP', 'PC', 'TABLET', 'SMARTWATCH', 'OTHER'));
+ALTER TABLE gadget_items ADD CONSTRAINT ck_gadget_phone_series CHECK (gadget_type <> 'PHONE' OR (series IS NOT NULL AND CHAR_LENGTH(TRIM(series)) > 0));
+UPDATE sheet_imports SET items_json = REPLACE(items_json, '"category":"PHONE"', '"category":"GADGET","gadgetType":"PHONE"');

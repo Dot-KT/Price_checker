@@ -48,6 +48,16 @@ public class SellerService {
     public SellerResponse get(UUID sellerId) { return SellerResponse.from(requireSeller(sellerId)); }
 
     @Transactional(readOnly = true)
+    @PreAuthorize("@sellerAccess.canRead(#sellerId)")
+    public String savedSheetLink(UUID sellerId) {
+        String url = requireSeller(sellerId).getGoogleSheetUrl();
+        if (url == null || url.isBlank()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "SHEET_NOT_SAVED", "Save a public Google Sheets link first.");
+        }
+        return url;
+    }
+
+    @Transactional(readOnly = true)
     @PreAuthorize("hasAuthority('project:read')")
     public PageResponse<SellerResponse> list(PageQuery query) {
         return PageResponse.from(sellers.findAll(PageRequest.of(query.page(), query.size(), Sort.by("id")))

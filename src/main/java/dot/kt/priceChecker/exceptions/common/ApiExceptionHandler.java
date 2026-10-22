@@ -1,6 +1,7 @@
 package dot.kt.priceChecker.exceptions.common;
 
 import dot.kt.priceChecker.exceptions.sheets.SheetAccessException;
+import dot.kt.priceChecker.exceptions.sheets.SheetValidationException;
 import java.util.List;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
@@ -41,6 +42,15 @@ public class ApiExceptionHandler {
     @ExceptionHandler(ApiException.class)
     ResponseEntity<ProblemDetail> handleApi(ApiException exception) {
         return problem(exception.getStatus(), exception.getCode(), exception.getMessage());
+    }
+
+    @ExceptionHandler(SheetValidationException.class)
+    ResponseEntity<ProblemDetail> handleSheetValidation(SheetValidationException exception) {
+        ProblemDetail detail = ProblemDetail.forStatusAndDetail(exception.getStatus(), exception.getMessage());
+        detail.setProperty("code", exception.getCode());
+        detail.setProperty("importId", exception.getImportId());
+        detail.setProperty("errors", exception.getErrors());
+        return ResponseEntity.status(exception.getStatus()).body(detail);
     }
 
     @ExceptionHandler(SheetAccessException.class)

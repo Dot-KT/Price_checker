@@ -18,6 +18,8 @@ spring:
         pull-model-strategy: never
 
 app:
+  telegram:
+    enabled: false
   security:
     jwt:
       signing-key-path: target/test-secrets/jwt-signing-key.json

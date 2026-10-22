@@ -28,7 +28,7 @@ class ExistingAccountMigrationTest {
         Flyway.configure().dataSource(url, "sa", "").load().migrate();
         try (var connection = DriverManager.getConnection(url, "sa", "");
              var statement = connection.createStatement();
-             var result = statement.executeQuery("SELECT u.id, u.email, u.password_hash, u.role, u.enabled, i.id AS item_id, i.item_condition FROM app_users u JOIN sellers s ON s.id = u.id JOIN inventory_items i ON i.seller_id = s.id")) {
+             var result = statement.executeQuery("SELECT u.id, u.email, u.password_hash, u.role, u.enabled, s.inventory_revision, i.id AS item_id, i.item_condition, i.item_id AS catalog_item_id FROM app_users u JOIN sellers s ON s.id = u.id JOIN inventory_items i ON i.seller_id = s.id")) {
             assertThat(result.next()).isTrue();
             assertThat(result.getObject("id", UUID.class)).isEqualTo(sellerId);
             assertThat(result.getString("email")).isEqualTo("old@example.com");
@@ -37,6 +37,8 @@ class ExistingAccountMigrationTest {
             assertThat(result.getBoolean("enabled")).isTrue();
             assertThat(result.getObject("item_id", UUID.class)).isEqualTo(itemId);
             assertThat(result.getString("item_condition")).isNull();
+            assertThat(result.getLong("inventory_revision")).isZero();
+            assertThat(result.getObject("catalog_item_id")).isNull();
         }
     }
 }

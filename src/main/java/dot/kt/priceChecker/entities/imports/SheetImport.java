@@ -51,6 +51,9 @@ public class SheetImport {
     @Column(name = "errors_json", nullable = false, columnDefinition = "text")
     private String errorsJson;
 
+    @Column(name = "base_inventory_revision", nullable = false, updatable = false)
+    private long baseInventoryRevision;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -72,6 +75,7 @@ public class SheetImport {
         this.errorRows = errorRows;
         this.itemsJson = itemsJson;
         this.errorsJson = errorsJson;
+        this.baseInventoryRevision = seller.getInventoryRevision();
         this.createdAt = Instant.now();
     }
 
@@ -125,6 +129,10 @@ public class SheetImport {
 
     public String getErrorsJson() {
         return errorsJson;
+    }
+
+    public long getBaseInventoryRevision() {
+        return baseInventoryRevision;
     }
 
     public Instant getCreatedAt() {
