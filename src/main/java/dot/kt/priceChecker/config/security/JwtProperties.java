@@ -9,5 +9,5 @@ import org.springframework.validation.annotation.Validated;
 @Validated
 @ConfigurationProperties("app.security.jwt")
 public record JwtProperties(@NotBlank String issuer, @NotBlank String audience,
-        @NotBlank String signingKeyPath, @Min(1) @Max(60) long accessTokenMinutes) {
+        @NotBlank String signingKeyPath, @Min(1) @Max(180) long accessTokenMinutes) {
 }

@@ -109,7 +109,7 @@ Use UUID primary keys and UTC timestamps. Store money as integer minor units (fo
 - **app_users**: `id`, `email`, `password_hash`, `role` (`ADMIN`, `MANAGER`, `SELLER`, `USER`), `enabled`, `token_version`, optimistic-lock revision, timestamps. Seller profiles share the account UUID. Only SELLER self-registration is currently exposed.
 - **sellers**: `id`, `user_id`, `display_name`, `status`, `default_currency`, contact and channel identifiers.
 - **products**: canonical product identity when useful: `id`, `name`, normalized name, brand/category, model.
-- **inventory_items**: `id`, `seller_id`, optional `product_id`, seller SKU, name, model, description, price_minor, currency, availability/quantity, source row, timestamps, `is_active`.
+- **inventory_items**: `id`, `seller_id`, optional `product_id`, seller SKU, name, model, description, optional free-text condition (`item_condition`), price_minor, currency, availability/quantity, source row, timestamps, `is_active`.
 - **sheet_imports**: `id`, `seller_id`, source URL/reference, status, row counts, validation summary, started/completed timestamps, initiating user.
 - **sheet_import_rows**: import ID, row number, raw/normalized values, validation errors; retain only as long as needed for diagnosis/audit.
 - **conversations**: channel, external chat/user ID, state JSON, last activity, optional linked user.
@@ -161,7 +161,7 @@ Use `/api/v1` and JSON. Suggested route groups:
 
 Services derive the current account ID through `CurrentUserService`; controllers accept DTOs and do not receive `Principal` or `Authentication`. Services authorize ownership before accessing target seller records. Validate payloads at the edge and return stable error codes and request IDs.
 
-The implemented security flow uses Spring Security's filter chain and OAuth2 resource-server JWT validation, with an application login endpoint issuing 15-minute RS256 tokens. Roles map to explicit service permissions. ADMIN can read/write across accounts; MANAGER has project read permissions only; SELLER and USER receive only their permitted self-service operations. Tokens contain an immutable account UUID and revocation version; enabled status and authorities are loaded from the live account. The management API exposes global reads and Admin mutations. Seller registration always assigns SELLER, and privileged roles require trusted provisioning.
+The implemented security flow uses Spring Security's filter chain and OAuth2 resource-server JWT validation, with an application login endpoint issuing 3-hour RS256 tokens. Roles map to explicit service permissions. ADMIN can read/write across accounts; MANAGER has project read permissions only; SELLER and USER receive only their permitted self-service operations. Tokens contain an immutable account UUID and revocation version; enabled status and authorities are loaded from the live account. The management API exposes global reads and Admin mutations. Seller registration always assigns SELLER, and privileged roles require trusted provisioning.
 
 ## 7. Security, reliability, and operations
 

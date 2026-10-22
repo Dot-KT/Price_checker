@@ -77,10 +77,13 @@ Import [the CSV template](examples/inventory-template.csv) into Google Sheets, o
 | `sku` | Recommended | Stable, unique seller product key, up to 128 characters |
 | `model` | No | Model, up to 255 characters |
 | `description` | No | Description, up to 4,000 characters |
+| `condition` | No | Free text, up to 255 characters, e.g. `Brand new`, `Used`, `Mint`, `Refurbished`, or `Has issues: cracked screen` |
 | `currency` | No | ISO code; defaults to the seller's currency (`NGN` at registration) |
 | `quantity` | No | Nonnegative whole number; blank means unknown |
 
 Headers ignore case and surrounding whitespace. `seller_sku`, `no.`, and `no` are accepted aliases for `sku`. When omitted or blank, a stable key is derived from the normalized name and model. Changing either field then creates a new identity, so explicit SKUs are preferable. Reordering rows does not change derived identities. Duplicate keys fail validation.
+
+Condition is optional; a missing or blank value is stored as unknown (`null`). Other condition descriptions are accepted, and previews and inventory responses include `condition`. Use separate SKUs for the same phone model offered in different conditions. Importing a blank condition clears any previously imported condition for that SKU.
 
 Use numbers or plain decimal text for prices. Comma grouping such as `1,234.50` is accepted; currency symbols and locale formats such as `1.234,50` are rejected. Money is stored as integer minor units: `425000.00 NGN` becomes `42500000` kobo. Excess decimal precision is rejected rather than rounded. Entirely blank rows are ignored; an empty sheet cannot clear inventory.
 
@@ -166,7 +169,7 @@ Confirmation imports the saved snapshot that was previewed. Changes made to Goog
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/v1/auth/sellers/register` | Register a seller with a server-assigned SELLER role; `/auth/register` remains a compatibility alias |
-| `POST` | `/api/v1/auth/login` | Exchange email/password for a 15-minute bearer token |
+| `POST` | `/api/v1/auth/login` | Exchange email/password for a 3-hour bearer token |
 | `POST` | `/api/v1/auth/logout` | Revoke all outstanding tokens for the authenticated account |
 | `GET` | `/api/v1/account/me` | Read your shared account, role, and permissions |
 | `GET` | `/api/v1/seller/me` | Inspect the authenticated seller profile |
@@ -206,7 +209,7 @@ The same trusted provisioning process can assign `MANAGER` or `USER`. Sign in ag
 
 Management endpoints expose paginated account and seller lists, individual seller profiles, inventory, and import history. Managers may use GET endpoints only. Admins may also update/delete a seller, save/remove the sheet link, preview imports, and confirm imports. Self-service `/seller/me` routes always refer to the caller's seller profile; use management routes to target another seller. An Admin or Manager account need not have a seller profile.
 
-Tokens use RS256 signatures with issuer, audience, subject, expiry, and token-version validation. Current roles and enabled status are read from the database on every authenticated request. Disabled/deleted accounts and revoked tokens are rejected immediately. Logout revokes all devices' tokens. Access tokens expire after 15 minutes; sign in again to obtain another token. Refresh tokens and public registration for other roles are not implemented.
+Tokens use RS256 signatures with issuer, audience, subject, expiry, and token-version validation. Current roles and enabled status are read from the database on every authenticated request. Disabled/deleted accounts and revoked tokens are rejected immediately. Logout revokes all devices' tokens. Access tokens expire after 3 hours; sign in again to obtain another token. Refresh tokens and public registration for other roles are not implemented.
 
 On first startup the app generates a private signing key at `secrets/jwt-signing-key.json`, which Git ignores. Keep this file private and persistent across restarts. Set `JWT_SIGNING_KEY_PATH` in `.env` to use another protected location; deployed instances must share the intended signing key. Test keys are created only under `target/test-secrets`. Do not put access tokens or private keys in source control or logs. For public deployment, apply login rate limits at your reverse proxy/API gateway. CSRF is disabled because authentication uses only explicit bearer headers, with no ambient browser credentials; cross-origin access is not enabled.
 

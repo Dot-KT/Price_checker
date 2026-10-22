@@ -93,13 +93,13 @@ class SecurityIntegrationTest {
     }
 
     @Test
-    void loginRejectsInvalidCredentialsAndReturnsUncacheableShortLivedTokens() throws Exception {
+    void loginRejectsInvalidCredentialsAndReturnsUncacheableThreeHourTokens() throws Exception {
         seed("user@example.com", Role.USER);
         mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("email", "USER@example.com", "password", PASSWORD))))
                 .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("$.tokenType").value("Bearer"))
-                .andExpect(jsonPath("$.expiresIn").value(900))
+                .andExpect(jsonPath("$.expiresIn").value(10800))
                 .andExpect(jsonPath("$.accessToken").isNotEmpty());
         for (String email : List.of("user@example.com", "missing@example.com")) {
             mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)

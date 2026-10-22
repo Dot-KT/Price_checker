@@ -25,7 +25,7 @@ import java.util.regex.Pattern;
 @Component
 public class SheetParser {
     private static final Pattern MONEY = Pattern.compile("(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\\.[0-9]+)?");
-    private static final Set<String> SUPPORTED_HEADERS = Set.of("sku", "name", "model", "description", "price", "currency", "quantity");
+    private static final Set<String> SUPPORTED_HEADERS = Set.of("sku", "name", "model", "description", "condition", "price", "currency", "quantity");
     private final SheetsProperties properties;
 
     public SheetParser(SheetsProperties properties) {
@@ -63,10 +63,12 @@ public class SheetParser {
             String name = text(row, columns, "name");
             String model = nullable(text(row, columns, "model"));
             String description = nullable(text(row, columns, "description"));
+            String condition = nullable(text(row, columns, "condition"));
             if (name.isEmpty()) errors.add(error(sourceRow, "name", "Name is required."));
             length(name, 255, sourceRow, "name", errors);
             length(model, 255, sourceRow, "model", errors);
             length(description, 4_000, sourceRow, "description", errors);
+            length(condition, 255, sourceRow, "condition", errors);
             String sku = text(row, columns, "sku");
             if (sku.isEmpty() && !name.isEmpty()) sku = derivedSku(name, model);
             length(sku, 128, sourceRow, "sku", errors);
@@ -81,7 +83,7 @@ public class SheetParser {
             Long price = price(text(row, columns, "price"), currency, sourceRow, errors);
             Integer quantity = quantity(text(row, columns, "quantity"), sourceRow, errors);
             if (errors.size() == before) {
-                items.add(new ParsedInventoryItem(sku, name, model, description, price, currencyCode, quantity, sourceRow));
+                items.add(new ParsedInventoryItem(sku, name, model, description, condition, price, currencyCode, quantity, sourceRow));
             }
         }
         return new SheetParseResult(items, errors, totalRows);

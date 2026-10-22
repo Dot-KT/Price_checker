@@ -38,6 +38,9 @@ public class InventoryItem {
     @Column(length = 4000)
     private String description;
 
+    @Column(name = "item_condition", length = 255)
+    private String condition;
+
     @Column(name = "price_minor", nullable = false)
     private long priceMinor;
 
@@ -61,20 +64,21 @@ public class InventoryItem {
     protected InventoryItem() {
     }
 
-    public InventoryItem(Seller seller, String sku, String name, String model, String description,
+    public InventoryItem(Seller seller, String sku, String name, String model, String description, String condition,
                          long priceMinor, String currency, Integer quantity, int sourceRow) {
         this.id = UUID.randomUUID();
         this.seller = seller;
         this.sellerSku = sku;
         this.createdAt = Instant.now();
-        update(name, model, description, priceMinor, currency, quantity, sourceRow);
+        update(name, model, description, condition, priceMinor, currency, quantity, sourceRow);
     }
 
-    public void update(String name, String model, String description, long priceMinor,
+    public void update(String name, String model, String description, String condition, long priceMinor,
                        String currency, Integer quantity, int sourceRow) {
         this.name = name;
         this.model = model;
         this.description = description;
+        this.condition = condition;
         this.priceMinor = priceMinor;
         this.currency = currency;
         this.quantity = quantity;
@@ -110,6 +114,10 @@ public class InventoryItem {
 
     public String getDescription() {
         return description;
+    }
+
+    public String getCondition() {
+        return condition;
     }
 
     public long getPriceMinor() {

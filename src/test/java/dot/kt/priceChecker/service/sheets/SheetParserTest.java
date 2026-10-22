@@ -24,7 +24,32 @@ class SheetParserTest {
                 row("iPhone 15", "1,234.50", "IPH-15", "128 GB", "Blue", new BigDecimal("2.0"), "ngn")), "USD");
         assertThat(result.errors()).isEmpty();
         assertThat(result.totalRows()).isEqualTo(1);
-        assertThat(result.items()).containsExactly(new ParsedInventoryItem("IPH-15", "iPhone 15", "128 GB", "Blue", 123450, "NGN", 2, 2));
+        assertThat(result.items()).containsExactly(new ParsedInventoryItem("IPH-15", "iPhone 15", "128 GB", "Blue", null, 123450, "NGN", 2, 2));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Brand new", "Used", "Mint", "Has issues: cracked screen", "Refurbished", "Open box", ""})
+    void acceptsFreeTextConditionAndTreatsBlankAsUnknown(String condition) {
+        var result = parser.parse(List.of(row("name", "price", " Condition "),
+                row("Phone", "100", "  " + condition + "  ")), "NGN");
+        assertThat(result.errors()).isEmpty();
+        assertThat(result.items().getFirst().condition()).isEqualTo(condition.isEmpty() ? null : condition);
+    }
+
+    @Test
+    void validatesConditionLengthAndRejectsNulBeforeDatabaseWrites() {
+        var valid = parser.parse(List.of(row("name", "price", "condition"),
+                row("Phone", "100", "x".repeat(255))), "NGN");
+        assertThat(valid.errors()).isEmpty();
+        for (String condition : List.of("x".repeat(256), "Cracked\0screen")) {
+            var invalid = parser.parse(List.of(row("name", "price", "condition"),
+                    row("Phone", "100", condition)), "NGN");
+            assertThat(invalid.items()).isEmpty();
+            assertThat(invalid.errors()).singleElement().satisfies(error -> {
+                assertThat(error.field()).isEqualTo("condition");
+                assertThat(error.rowNumber()).isEqualTo(2);
+            });
+        }
     }
 
     @Test

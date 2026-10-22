@@ -6,7 +6,7 @@ spring:
   datasource:
     url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/price_checker}
     username: ${DATABASE_USERNAME:price_checker}
-    password: ${DATABASE_PASSWORD:}
+    password: ${DATABASE_PASSWORD:price_checker}
   jpa:
     open-in-view: false
     hibernate:
@@ -20,9 +20,9 @@ app:
       issuer: price-checker
       audience: price-checker-api
       signing-key-path: ${JWT_SIGNING_KEY_PATH:secrets/jwt-signing-key.json}
-      access-token-minutes: 15
+      access-token-minutes: 180
   sheets:
-    max-rows: 10000
+    max-rows: 1000
 
 springdoc:
   paths-to-match: /api/**

@@ -1,6 +1,7 @@
 package dot.kt.priceChecker.controllers.imports;
 
 import dot.kt.priceChecker.dto.sheets.SheetSnapshot;
+import dot.kt.priceChecker.entities.imports.SheetImport;
 import dot.kt.priceChecker.entities.inventory.InventoryItem;
 import dot.kt.priceChecker.entities.sellers.Seller;
 import dot.kt.priceChecker.enums.imports.ImportStatus;
@@ -106,9 +107,9 @@ class SheetImportApiTest {
     @Test
     void previewRequiresConfirmationAndRepeatedConfirmKeepsInventoryIdsAndPrices() throws Exception {
         Seller seller = register("first@example.com");
-        mockSheet(row("sku", "name", "price", "currency", "quantity"),
-                row("PHONE-1", "Phone", "1,234.50", "NGN", "2"),
-                row("CABLE-1", "Cable", "0.10", "NGN", "0"));
+        mockSheet(row("sku", "name", "price", "currency", "quantity", "condition"),
+                row("PHONE-1", "Phone", "1,234.50", "NGN", "2", "Mint"),
+                row("CABLE-1", "Cable", "0.10", "NGN", "0", ""));
 
         JsonNode preview = preview(seller);
         String id = preview.path("id").asText();
@@ -116,6 +117,7 @@ class SheetImportApiTest {
         assertThat(preview.path("totalRows").intValue()).isEqualTo(2);
         assertThat(preview.path("validRows").intValue()).isEqualTo(2);
         assertThat(preview.path("errors").isEmpty()).isTrue();
+        assertThat(preview.path("preview").get(0).path("condition").asText()).isEqualTo("Mint");
         assertThat(inventory.count()).isZero();
         mvc.perform(get(IMPORTS + "/" + id).with(bearer(seller.getEmail(), PASSWORD)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PREVIEW"));
@@ -129,6 +131,8 @@ class SheetImportApiTest {
         assertThat(phone.getPriceMinor()).isEqualTo(123450L);
         assertThat(phone.getCurrency()).isEqualTo("NGN");
         assertThat(phone.getQuantity()).isEqualTo(2);
+        assertThat(phone.getCondition()).isEqualTo("Mint");
+        assertThat(cable.getCondition()).isNull();
         assertThat(cable.getPriceMinor()).isEqualTo(10L);
         assertThat(cable.getQuantity()).isZero();
         UUID phoneId = phone.getId();
@@ -142,15 +146,16 @@ class SheetImportApiTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(2))
                 .andExpect(jsonPath("$.items[0].sellerSku").value("CABLE-1"))
                 .andExpect(jsonPath("$.items[0].priceMinor").value(10))
-                .andExpect(jsonPath("$.items[1].id").value(phoneId.toString()));
+                .andExpect(jsonPath("$.items[1].id").value(phoneId.toString()))
+                .andExpect(jsonPath("$.items[1].condition").value("Mint"));
     }
 
     @Test
     void replacementUpsertsOwnSkusDeactivatesMissingItemsAndPreservesOtherSellers() throws Exception {
         Seller first = register("first@example.com");
         Seller second = register("second@example.com");
-        mockSheet(row("sku", "name", "price"), row("SHARED", "First phone", "100.10"),
-                row("REMOVED", "Old cable", "25"));
+        mockSheet(row("sku", "name", "price", "condition"), row("SHARED", "First phone", "100.10", "Used"),
+                row("REMOVED", "Old cable", "25", "Used"));
         confirm(first, preview(first).path("id").asText());
         UUID sharedId = item(first, "SHARED").getId();
         UUID removedId = item(first, "REMOVED").getId();
@@ -158,8 +163,8 @@ class SheetImportApiTest {
         confirm(second, preview(second).path("id").asText());
         UUID secondId = item(second, "SHARED").getId();
 
-        mockSheet(row("sku", "name", "price"), row("SHARED", "Updated first phone", "120.25"),
-                row("NEW", "New charger", "50"));
+        mockSheet(row("sku", "name", "price", "condition"), row("SHARED", "Updated first phone", "120.25", "Has issues: cracked screen"),
+                row("NEW", "New charger", "50", "Brand new"));
         String replacement = preview(first).path("id").asText();
         assertThat(item(first, "SHARED").getName()).isEqualTo("First phone");
         assertThat(item(first, "REMOVED").isActive()).isTrue();
@@ -167,6 +172,9 @@ class SheetImportApiTest {
 
         assertThat(item(first, "SHARED").getId()).isEqualTo(sharedId);
         assertThat(item(first, "SHARED").getPriceMinor()).isEqualTo(12025L);
+        assertThat(item(first, "SHARED").getCondition()).isEqualTo("Has issues: cracked screen");
+        assertThat(item(first, "NEW").getCondition()).isEqualTo("Brand new");
+        assertThat(item(second, "SHARED").getCondition()).isNull();
         assertThat(item(first, "REMOVED").getId()).isEqualTo(removedId);
         assertThat(item(first, "REMOVED").isActive()).isFalse();
         assertThat(item(first, "NEW").isActive()).isTrue();
@@ -186,8 +194,23 @@ class SheetImportApiTest {
         confirm(first, preview(first).path("id").asText());
         assertThat(item(first, "REMOVED").getId()).isEqualTo(removedId);
         assertThat(item(first, "REMOVED").isActive()).isTrue();
+        assertThat(item(first, "REMOVED").getCondition()).isNull();
         assertThat(item(first, "SHARED").isActive()).isFalse();
         assertThat(item(second, "SHARED").isActive()).isTrue();
+    }
+
+    @Test
+    void previewsSavedBeforeConditionWasAddedStillLoadAndConfirm() throws Exception {
+        Seller seller = register("legacy@example.com");
+        String legacyItems = json.writeValueAsString(List.of(Map.of(
+                "sellerSku", "PHONE", "name", "Phone", "priceMinor", 10000,
+                "currency", "NGN", "sourceRow", 2)));
+        SheetImport legacy = imports.saveAndFlush(new SheetImport(seller, URL, "Inventory", 1, 1, 0, legacyItems, "[]"));
+        mvc.perform(get(IMPORTS + "/" + legacy.getId()).with(bearer(seller.getEmail(), PASSWORD)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PREVIEW"));
+        confirm(seller, legacy.getId().toString());
+        assertThat(item(seller, "PHONE").getCondition()).isNull();
+        assertThat(item(seller, "PHONE").getPriceMinor()).isEqualTo(10000);
     }
 
     @Test

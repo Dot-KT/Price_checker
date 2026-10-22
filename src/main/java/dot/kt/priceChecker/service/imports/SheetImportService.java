@@ -136,9 +136,9 @@ public class SheetImportService {
             InventoryItem item = existing.remove(row.sellerSku());
             if (item == null) {
                 inventory.save(new InventoryItem(seller, row.sellerSku(), row.name(), row.model(),
-                        row.description(), row.priceMinor(), row.currency(), row.quantity(), row.sourceRow()));
+                        row.description(), row.condition(), row.priceMinor(), row.currency(), row.quantity(), row.sourceRow()));
             } else {
-                item.update(row.name(), row.model(), row.description(), row.priceMinor(),
+                item.update(row.name(), row.model(), row.description(), row.condition(), row.priceMinor(),
                         row.currency(), row.quantity(), row.sourceRow());
             }
         }
